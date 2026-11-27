@@ -136,7 +136,9 @@ Agents may report their own completion but cannot determine whether a phase or R
 - **Interaction Request**: A collection of questions requiring user judgment, associated with the originating role, Attempt, plan revision, and resume target.
 - **User Answer**: A selection or free-text answer submitted by the user and validated and recorded by Bellona.
 
-In the MVP, a session belongs to one role and one worktree. The engine resumes a session only to continue an Attempt (structured-output repair or continuation after user input) or to run a repair Attempt for the same Phase in the same worktree. Reusing a session across Phases is deferred (M6): each Phase has its own worktree, so the session's context would refer to the paths and state of a different worktree. Multiple active Attempts must not run concurrently in one session. An Evaluator must not reuse an Implementer session.
+In the MVP, a session belongs to one role and one worktree. The engine resumes a session in three cases: to continue an Attempt (structured-output repair or continuation after user input), to run a repair Attempt for the same Phase in the same worktree, and to run a later Planner Attempt of the same Run (plan-validation retries, plan changes requested by the user, and replanning). Reusing a session across Phases is deferred (M6): each Phase has its own worktree, so the session's context would refer to the paths and state of a different worktree. Multiple active Attempts must not run concurrently in one session. An Evaluator must not reuse an Implementer session.
+
+Resuming the Planner keeps its investigation of the codebase. Before a resumed Planner Turn, update the Planner's worktree to the current integration commit, and take the baseline for the role-contract comparison (§4) after that update. Tell the Planner which commits were integrated since its previous Turn and which files they changed. If the session no longer exists, start a new session with the handoff context (§12.3).
 
 ## 6. Workflow and state transitions
 
@@ -345,7 +347,7 @@ sequenceDiagram
 - Waiting for user input is a normal state and does not consume failure, retry, or replan counts. Execution time limits generally apply to active processing; elapsed time awaiting input is measured separately.
 - Resume the originating session after all mandatory questions have been answered. The resumed execution is the next Turn of the same Attempt, in the same worktree. If the session cannot be restored, mark the Attempt `Abandoned` and continue in a new Attempt and a new session of the same role using the original request, current plan, questions, and answers. Reconcile workspace state before resuming work that makes actual changes.
 - Answers to Planner questions (including Other) are interpreted by the Planner and incorporated into the plan. Do not pass them directly to the Implementer and bypass plan validation. If an answer to another role requires a plan change, return to the Planner and validate the revised plan.
-- Follow-up questions are allowed. Do not fill in unanswered questions automatically on EOF, cancellation, or partial answers. Handle the harness's own tool-permission approvals separately, without altering existing approval settings.
+- Follow-up questions are allowed. Do not fill in unanswered questions automatically on EOF, cancellation, or partial answers. Handle the harness's own tool-permission approvals separately, without altering existing approval settings. The only permission rules that Bellona adds are those of scope enforcement, when the user enables it (§14).
 
 ### 6.2 Input freshness and approval binding
 
@@ -603,6 +605,10 @@ Protect the verification itself. `verification.protectedPaths` lists patterns, i
 
 At Run start, after preparing the integration worktree and running workspace setup (§13), run the required checks once on the base commit. If this baseline fails, the Run becomes `Blocked` before any agent is launched and reports the failing checks. Checks that already fail on the base commit would otherwise fail every Phase and consume agent effort on failures that predate the Run. A baseline that fails because of the environment can be resumed after the environment is fixed. A baseline that fails because of the repository itself cannot be repaired within the Run, because the base commit is frozen: cancel the Run, fix the base, and start a new Run.
 
+The baseline run also records the files that the checks create and that are neither tracked nor ignored. Record these paths with the baseline evidence and treat them as ignored for the rest of the Run. Otherwise a check run inside a Phase worktree would add them to the change set, and they would be reported as scope violations.
+
+Give the Implementer the commands of its Phase's checks, so that it can run them and fix failures before it reports `implemented`. This saves repair Attempts, each of which starts a new process. The Implementer's own runs are not evidence: acceptance rests only on the engine's verification of the candidate commit. A self-check that is refused or skipped is not a failure. Whether the Implementer may run the commands depends on the role's permissions (§14). The Phase must declare in `resources.exclusive` the shared resources that its checks use, because the engine does not coordinate a check that the agent runs itself (§10.1).
+
 Mechanical verification does not guarantee complete software correctness, and Evaluator judgments may also be wrong. Prioritize never treating failed or unexecuted mandatory checks as success.
 
 ## 10. Adaptive orchestration and scheduling
@@ -703,6 +709,8 @@ type AgentRequest struct {
     Limits        TurnLimits // Per-Turn step and cost caps, where supported (§14.2)
     Customization string     // Host customization scope for the role (§14)
     Env           []string   // Names of additional environment variables to pass (§14)
+    Scope         *ScopeRules // Generated permission rules under scope enforcement (§14)
+    Subagents     string     // Whether the role may delegate to host subagents (§11.1)
     ExtraArgs     []string   // User-configured host arguments for the role (§14)
 }
 
@@ -722,11 +730,12 @@ The agent's final message is its output channel. The adapter captures it from th
 
 Derive the outcome from the host's result, never from the exit code alone: a host can exit successfully after refusing the calls that the task needed.
 
-Everything beyond the session, outcome, output, and exit code is optional, and so is every capability: a session ID assigned before launch, native structured output, a launch receipt, per-Turn step and cost caps, a graceful interrupt, a customization scope, and reporting of refused calls. The core must work when a capability is absent. A role setting that requires an absent capability fails configuration validation at Run start instead of being silently ignored.
+Everything beyond the session, outcome, output, and exit code is optional, and so is every capability: a session ID assigned before launch, native structured output, a launch receipt, per-Turn step and cost caps, a graceful interrupt, a customization scope, reporting of refused calls, path-scoped permission rules, and read-only subagents. The core must work when a capability is absent. A role setting that requires an absent capability fails configuration validation at Run start instead of being silently ignored.
 
-- **Launch receipt.** When the host reports the configuration it applied at session start, the adapter stores it with the Attempt: model, working directory, session ID, host version, permission mode, available tools, loaded extensions, sandbox state, and credential source, but never the credential. A receipt that contradicts a value the adapter itself set, namely the working directory or the session ID, fails the Attempt as `MissingEnvironment`. Values that come from the user's host settings or from `args`, such as tools and permission mode, are recorded but not compared, because the adapter does not interpret `args`. The receipt matters because a host may ignore invalid settings without reporting an error.
-- **Refused calls.** Always record the calls that the host refused. A refusal is evidence, not an error: an agent may complete its task another way, and refusals are expected for a role whose tools are restricted. Use refusals to classify a failure only when the Attempt did not produce acceptable output. If a refused call was needed for the task, that failure is `MissingEnvironment`.
+- **Launch receipt.** When the host reports the configuration it applied at session start, the adapter stores it with the Attempt: model, working directory, session ID, host version, permission mode, available tools, loaded extensions, sandbox state, and credential source, but never the credential. A receipt that contradicts a value the adapter itself set, namely the working directory, the session ID, or the permission mode under scope enforcement (§14), fails the Attempt as `MissingEnvironment`. Values that come from the user's host settings or from `args`, such as tools and permission mode, are recorded but not compared, because the adapter does not interpret `args`. The receipt matters because a host may ignore invalid settings without reporting an error.
+- **Refused calls.** Always record the calls that the host refused. A refusal is evidence, not an error: an agent may complete its task another way, and refusals are expected for a role whose tools are restricted. Use refusals to classify a failure only when the Attempt did not produce acceptable output. If a refused call was needed for the task, that failure is `MissingEnvironment`. A refusal caused by a rule that Bellona generated for scope enforcement is different: it means the plan's scope is too narrow, not that the environment is missing. The Implementer reports `needs_replan`, the engine passes the refused paths recorded for the Attempt to the Planner, and recovery follows the scope-amendment path (§6).
 - **Environment.** The adapter builds the environment of the agent process explicitly instead of inheriting Bellona's. It passes a baseline needed to run the host, such as the home directory, the search path, and the locale, plus the variables named in `agents.<role>.env`. Record the names in the manifest, never the values. Host variables can override the model, the effort level, or the credentials of a run, so an inherited environment would make the requested values unreliable.
+- **Prompt layout.** Keep the role definition identical across the Attempts of a role in a Run, and put everything that varies, such as the Phase, the inputs, and the working directory, in the user message. A host that caches prompts can then reuse the role definition across Attempts and worktrees. The benefit is not established: record cache usage for every Attempt and measure it in M0 (§11.3).
 
 | Runtime | Initial integration | Possible future integration |
 | --- | --- | --- |
@@ -741,7 +750,9 @@ MVP input requests are processed after the agent Turn and process finish. Persis
 
 ### 11.1 Process, session and turn lifecycle
 
-In the MVP, Bellona launches independent CLI sessions directly rather than delegating to native subagents. Wait for normal agent termination and verify results before proceeding. Disallow native subagent delegation as a role contract and enforce it within host capabilities, but do not enforce it through a custom sandbox.
+In the MVP, Bellona launches independent CLI sessions directly rather than delegating to native subagents. Wait for normal agent termination and verify results before proceeding. For the Implementer and the Coordinator, disallow native subagent delegation as a role contract and enforce it within host capabilities, but do not enforce it through a custom sandbox. Where the host reports subagent use, record it.
+
+The Planner and the Evaluator may use the host's subagents for read-only investigation when `agents.<role>.subagents` is `readOnly`; the default is `none`. Subagents are not Attempts. They run inside the Attempt's slot, the Attempt's output is still the role's own final message, and their usage counts toward the Attempt's usage and caps. Bellona does not schedule them, so they add load beyond `maxConcurrency`, draw on the same quota, and can lengthen the wait after the final answer (§11.2). Their read-only behaviour is checked by the worktree comparison (§4), as for the role itself. A role that delegates needs the host's delegation tool, so a tool allow-list in `args` must include it. Configuration validation rejects `subagents: readOnly` for the Implementer and the Coordinator.
 
 Whether a process is launched per Turn or retained across multiple Turns is the adapter's responsibility. The MVP uses non-interactive `claude -p` / `codex exec` processes and launches a new process for every Turn, including Turns that resume a session. Future integrations such as App Server separate Turn completion from Process termination and release resources at Run completion or cancellation. Every Evaluator Attempt starts in a new session.
 
@@ -777,7 +788,7 @@ Evidence levels: **observed** means seen in non-interactive runs on one machine,
 | Topic | Finding | Evidence |
 | --- | --- | --- |
 | Prompt | Non-interactive mode reads the prompt from standard input. An option that takes several values absorbs a prompt argument that follows it. | observed |
-| Adapter-owned arguments | Among others: `-p`, `--output-format`, `--input-format`, `--json-schema`, `--session-id`, `--resume`, `--continue`, `--fork-session`, `--no-session-persistence`, `--model`, `--effort`, `--max-turns`, `--max-budget-usd`, and the options that implement the customization scope. | help; `--max-turns` is in the docs and accepted by the CLI but absent from its help |
+| Adapter-owned arguments | Among others: `-p`, `--output-format`, `--input-format`, `--json-schema`, `--session-id`, `--resume`, `--continue`, `--fork-session`, `--no-session-persistence`, `--model`, `--effort`, `--max-turns`, `--max-budget-usd`, and the options that implement the customization scope. Under scope enforcement, also `--permission-mode`, `--allowedTools`, and `--disallowedTools`. | help; `--max-turns` is in the docs and accepted by the CLI but absent from its help |
 | Session ID | `--session-id <uuid>` sets the ID, and the result reports the same ID. | observed |
 | Resume | `--resume <id>` worked from a sibling worktree and from an unrelated directory. Two processes resuming one session can lose messages. Interrupted tool calls are not rerun. Transcripts are kept for 30 days by default (`cleanupPeriodDays`). | observed; docs |
 | System prompt on resume | The system prompt is recorded on the first request and reused on resume, even when a later launch passes different text. This recording is off by default under `--bare`. | help |
@@ -787,6 +798,9 @@ Evidence levels: **observed** means seen in non-interactive runs on one machine,
 | Cost | `total_cost_usd` and `modelUsage` accumulate across resumes of one session. | observed |
 | Cost cap | `--max-budget-usd` stops a run on the host's own cost estimate, and spend can pass the cap. | docs |
 | Tool restriction | `--tools "Read,Grep,Glob"` removes the other built-in tools. `--disallowedTools "Edit,Write"` does not prevent writes: with `acceptEdits`, a shell redirection created a file. `--permission-mode dontAsk` refuses calls that would prompt and still runs calls matched by `--allowedTools`. | observed |
+| Scope rules | With `--permission-mode dontAsk`, `--allowedTools "Edit(src/**)"` allowed a write under `src/` and refused one elsewhere, and the rule also governed the Write tool. A `--disallowedTools "Edit(src/protected/**)"` rule overrode the allow rule. User settings were not loaded in these runs. | observed |
+| Subagents | The delegation tool is listed as `Task`. With `--tools "Read,Grep,Glob,Task"`, a subagent could not write a file, and the result reported `subagent_stats.spawned: 2`, one of them started by the other subagent. Subagent spend counts toward `--max-budget-usd`. | observed; docs |
+| Prompt cache | In one probe of four runs, a second fresh worktree created the same number of cache tokens with and without `--exclude-dynamic-system-prompt-sections`, and about 12,000 tokens were read from cache in every run. No effect of the flag was observed. | observed |
 | Restricted mode | `--restricted` removes the tools that run commands and ignores user, project, and local settings files. | help |
 | Permission prompts | `--permission-prompts host` routes prompts to an SDK host or to `--permission-prompt-tool`; `none` denies them. | help |
 | Launch receipt | With `--output-format stream-json --verbose`, the first event (`system` / `init`) reports `model`, `cwd`, `session_id`, `permissionMode`, `tools`, `plugins`, `mcp_servers`, `sandbox_enabled`, `claude_code_version`, and `apiKeySource`. It did not report the effort level, also when `--effort` was passed. | observed |
@@ -802,7 +816,11 @@ Open questions for the M0 probe. None of these is verified:
 - Does an environment variable take precedence over `--effort`, and is an unsupported effort level lowered without an error?
 - Does an API key in the environment take precedence over a subscription login in `-p` mode?
 - Which result subtypes report a turn cap and a cost cap?
-- How do rate limits surface when several processes run in parallel? A `rate_limit_event` appeared in the event stream of a normal run with `status: allowed`, and the result has a `subagent_stats` field. Both were only observed and were not found in the docs.
+- How do rate limits surface when several processes run in parallel? A `rate_limit_event` appeared in the event stream of a normal run with `status: allowed`. It was only observed and was not found in the docs, like the `subagent_stats` field of the result.
+- Under `hostCustomization: inherit`, do the user's own permission rules widen the scope rules that the adapter generates?
+- Do tool restrictions apply to every subagent, including the built-in agent types? How is delegation turned off for a role, and is `subagent_stats` a reliable signal of it?
+- Under `dontAsk`, which read-only shell commands still run? Only writes were tested, and an Implementer under scope enforcement needs commands such as `git diff`.
+- Does an identical role definition increase cache reuse across Attempts and worktrees? Measure it with the cache token counts in the result.
 - Does the host retry API errors itself, and how many times?
 - Is auto memory read or written in `-p` runs, and does `--safe-mode` turn it off?
 - Do union schemas (`anyOf`, `oneOf`) work with `--json-schema`?
@@ -942,8 +960,8 @@ The Context Builder selects the minimum information needed by each role, providi
 | Role | Required context |
 | --- | --- |
 | Coordinator | Original request, progress, failure evidence, applicable effort values, remaining budget. |
-| Planner | Original request, code, user decisions, current plan and rationale for changes, verification contracts. When replanning: the current integration commit and the Phases already integrated. |
-| Implementer | Assigned Phase (goal, steps, constraints, context files), acceptance criteria, dependency results, target worktree, findings for repair attempts. |
+| Planner | Original request, code, user decisions, current plan and rationale for changes, verification contracts. When replanning: the current integration commit, the Phases already integrated, and the commits integrated since the session's previous Turn with the files they changed. |
+| Implementer | Assigned Phase (goal, steps, constraints, context files), acceptance criteria, the commands of the Phase's checks, dependency results, target worktree, findings for repair attempts. |
 | Evaluator | Original request, acceptance criteria, actual diff, independent verification results. Do not share the Implementer's entire conversation by default. |
 
 ### 12.4 Run manifest and compatibility
@@ -968,13 +986,13 @@ Plan Revision represents plan changes within a Run and is distinct from Schema V
 
 ## 13. Workspace and trust model
 
-Use only Git worktrees for workspace separation in the initial implementation. Bellona-managed sandbox configuration, OS-level isolation, container management, and network restrictions are out of scope. Respect existing user settings for each CLI; Bellona does not edit harness configuration files and does not add permission or sandbox arguments of its own. The adapter adds only the arguments it owns: non-interactive mode, output, session, model, effort, limits, and the configured customization scope (§11). In a non-interactive run, a call that needs approval is refused unless something is configured to answer the prompt, and the MVP attaches no permission handler. The arguments a role needs in order to work without prompts are therefore explicit user configuration (§14).
+Use only Git worktrees for workspace separation in the initial implementation. Bellona-managed sandbox configuration, OS-level isolation, container management, and network restrictions are out of scope. Respect existing user settings for each CLI; Bellona does not edit harness configuration files, never adds sandbox arguments, and by default adds no permission arguments. The one exception is scope enforcement, which the user enables for the Implementer (§14). Otherwise the adapter adds only the arguments it owns: non-interactive mode, output, session, model, effort, limits, and the configured customization scope (§11). In a non-interactive run, a call that needs approval is refused unless something is configured to answer the prompt, and the MVP attaches no permission handler. The arguments a role needs in order to work without prompts are therefore explicit user configuration (§14).
 
 - Record repository state and the base commit at Run start. Do not overwrite or discard existing uncommitted changes. By default, the MVP rejects a dirty working tree.
 - Prepare a Bellona-managed integration worktree per Run and independent worktrees per concurrently executed Phase. Integration ref updates and internal commits follow §10.2. Applying changes to the user's working tree is an explicit operation.
 - Create worktrees under `workspace.root`, which defaults to the `worktrees/` directory of the Run (§12). Worktrees are never created inside the user's working tree.
 - A new worktree contains only tracked files. Ignored files such as installed dependencies, build caches, and local environment files are absent, so checks may not run in it as they do in the user's working tree. Run the commands listed in `workspace.setup` in every new worktree before any agent or check uses it. Setup commands are trusted definitions frozen in the manifest, like checks (§9). A setup failure is `MissingEnvironment` (§14.1).
-- Harness settings kept in ignored files, for example a project-local settings file, are also absent from a new worktree. Agent permissions therefore must not depend on such files; they come from the user's own harness settings and from the role's configured arguments (§14).
+- Harness settings kept in ignored files, for example a project-local settings file, are also absent from a new worktree. Agent permissions therefore must not depend on such files; they come from the user's own harness settings, from the role's configured arguments, and from generated scope rules when scope enforcement is enabled (§14).
 - The prohibition on Planner/Evaluator source edits, Implementer change scopes, and prohibition on direct control-state writes are logical operation contracts. Address detectable violations through pre/post-execution diff inspection, artifact validation, and transition guards.
 - Do not intentionally save credentials or API keys in artifacts or logs. Do not prioritize instructions embedded in issues, code, logs, or external documents over user approvals or engine policy.
 - Validate paths, symbolic links, and sizes of artifacts loaded by the engine; reject unexpected paths and invalid input.
@@ -1060,7 +1078,7 @@ The example is proposed Bellona configuration, not a Claude Code or Codex config
 
 `agents.<role>.args` lists extra command-line arguments for the harness for that role. Each adapter declares the arguments it owns, and configuration validation at Run start rejects `args` that contain one of them. The adapter decides the argument order and passes the prompt separately from `args`, so an option that takes several values cannot absorb the prompt. The arguments are frozen in the manifest. Verify the actual argument names for each host at integration time (§11).
 
-Bellona adds no permission or sandbox arguments of its own and has no permissive default. The user decides, per role, what the harness may do without prompting:
+By default, Bellona adds no permission arguments of its own. It never adds sandbox arguments, and it has no permissive default. The user decides, per role, what the harness may do without prompting:
 
 - The Implementer must be able to edit files in its worktree in non-interactive mode.
 - For a role that must not write, restrict the tools that are available instead of listing tools to deny. A deny list leaves other ways to write, such as shell commands.
@@ -1071,7 +1089,17 @@ Refused calls are recorded and classified as described in §11.
 
 `agents.<role>.hostCustomization` states how much of the user's and the project's host customization the role loads. `inherit`, the default, loads what the host normally loads: instruction files, memory, extensions, hooks, and tool servers. `isolated` starts the host without them, where the adapter supports it. Isolation also removes the project's instruction files, so it is not the default. It suits roles that need independence more than project conventions. In particular, host memory that is shared across worktrees can carry an Implementer's notes to the Evaluator.
 
-`agents.<role>.env` names additional environment variables to pass to the agent process (§11). `execution.maxAgentSteps` and `execution.maxTurnCostUsd` cap one Turn where the host supports it (§14.2). `verification.protectedPaths` protects existing tests and check configuration (§9).
+`agents.implementer.scopeEnforcement` chooses when the change scope is enforced. With `detect`, the default, the engine inspects the change set after the Turn (§10.2). With `host`, the adapter also generates host permission rules for each Implementer Attempt, so that an edit outside the scope is refused when it is attempted and the agent can adjust within the same Turn:
+
+- Edits are allowed only to paths in the Phase's `changeScope`.
+- Edits to `protectedPaths` are refused in a Phase whose steps name no protected file. A Phase whose steps name protected files relies on the inspection after the Turn for them.
+- The commands of the Phase's checks, of `workspace.setup`, and of `agents.implementer.allowedCommands` may run. `allowedCommands` lists names from `commands`, for example a formatter or a code generator. Other calls that need approval are refused.
+
+In this mode the adapter owns the role's permission mode and permission-rule arguments, and `args` must not contain them. The mode requires a host that supports path-scoped rules; without one, configuration validation fails. If a scope pattern cannot be expressed in the host's rule syntax, the adapter runs that Phase with detection only and records that enforcement was not applied.
+
+Host enforcement reduces wasted Attempts; it is not a boundary. A permitted command, such as a test runner, can still write anywhere, and with `hostCustomization: inherit` the user's own host rules may widen what is allowed. The engine's inspection after the Turn remains the authority. An Implementer that needs a file outside its scope reports `needs_replan`, and the Planner receives the refused paths (§11).
+
+`agents.<role>.subagents` states whether the Planner or the Evaluator may delegate read-only investigation to host subagents (§11.1). `agents.<role>.env` names additional environment variables to pass to the agent process (§11). `execution.maxAgentSteps` and `execution.maxTurnCostUsd` cap one Turn where the host supports it (§14.2). `verification.protectedPaths` protects existing tests and check configuration (§9).
 
 Configuration precedence is normally explicit CLI settings, user settings, trusted project settings, and built-in defaults, in that order. Lower-priority settings and LLM proposals must not weaken operation restrictions or budget ceilings. After Run start, execution limits change only through a user policy amendment (§6.3).
 
@@ -1099,7 +1127,7 @@ Avoid redundant retry loops between the harness and Bellona. Do not casually cla
 
 ### 14.2 Execution budgets
 
-The MVP manages Attempt counts, replan counts, and Turn/Phase/Run time limits. Where the host supports it, also cap the agent steps and the estimated cost of each Turn (`execution.maxAgentSteps`, `execution.maxTurnCostUsd`). The host enforces these caps on its own estimate and can pass them, so they bound a runaway Turn but are not a guaranteed monetary limit. Where the host has no such cap, record the caps as not applied, as for effort (§7); the Turn timeout remains the bound. Do not equate reasoning effort with a token or cost ceiling. Persist actual token usage, cache usage, and API-equivalent cost only when available. Represent unavailable values as `unknown` or null, never as zero in aggregates. Distinguish subscription charges from API-equivalent costs. A host may report cost cumulatively for a session; aggregate cost per session from the latest reported value instead of adding up the values of its Turns. The adapter states which form its host uses. Do not guarantee a strict monetary limit for hosts whose exact usage cannot be controlled in advance. Advanced budget allocation and cross-Run aggregation are P1 or later.
+The MVP manages Attempt counts, replan counts, and Turn/Phase/Run time limits. Where the host supports it, also cap the agent steps and the estimated cost of each Turn (`execution.maxAgentSteps`, `execution.maxTurnCostUsd`). The host enforces these caps on its own estimate and can pass them, so they bound a runaway Turn but are not a guaranteed monetary limit. Where the host has no such cap, record the caps as not applied, as for effort (§7); the Turn timeout remains the bound. Do not equate reasoning effort with a token or cost ceiling. Persist actual token usage, cache usage, and API-equivalent cost only when available. Represent unavailable values as `unknown` or null, never as zero in aggregates. Distinguish subscription charges from API-equivalent costs. A host may report cost cumulatively for a session; aggregate cost per session from the latest reported value instead of adding up the values of its Turns. The adapter states which form its host uses. This matters in particular for the Planner, whose Attempts share one session (§5). Do not guarantee a strict monetary limit for hosts whose exact usage cannot be controlled in advance. Advanced budget allocation and cross-Run aggregation are P1 or later.
 
 ## 15. CLI concept
 
@@ -1236,6 +1264,8 @@ Consider third-party libraries individually only when actual requirements arise 
 
 The first practical MVP covers M0–M4. It is not complete until M4 delivers parallel DAG execution and integration. Run manifests, persisted Attempt launch intent, persistence ordering, error classification and retry limits, process termination, and reconciliation are mandatory MVP requirements. Complete manifests, events/reducer, and locking in M0; process management and fixed input contracts in M1; questions, answers, and revision checks in M2; and post-crash reconciliation and error-specific recovery in M3. The initial implementation may use only one harness, but design the adapter interface to be vendor-independent. Begin evaluation infrastructure, worktree lifecycle management, and logical state-gate testing in the first milestone.
 
+Resuming the Planner session and passing check commands to the Implementer are default behaviour and belong to M2. Host scope enforcement and read-only subagents are optional, off by default, and not required for the MVP; schedule them after M4.
+
 ## 19. Testing and empirical evaluation
 
 ### Deterministic tests
@@ -1249,6 +1279,7 @@ The first practical MVP covers M0–M4. It is not complete until M4 delivers par
 - HITL: Single and multiple selection, automatic addition of Other and preservation of free text, rejection of empty input, unknown IDs, duplicate answers, and invalidated questions; partial answers, EOF, suspension and resumption, follow-up questions, resume-target checks, prohibition of implementation before required answers, and agent termination while awaiting input.
 - Runtime contract: rejection of adapter-owned arguments in `args`, a prompt that is not absorbed by multi-value options, a session ID assigned before launch and recorded with the launch intent, a launch receipt stored per Attempt, an Attempt failing when the receipt reports a different working directory or session ID, refused calls recorded without failing an Attempt that succeeded, a per-Turn cap ending the Attempt as `Failed` without stopping the Run, cost aggregated per session from cumulative values, an explicitly built child environment, staged cancellation, and output from a cancelled Attempt not being accepted.
 - Verification integrity: rejection of an evaluation that omits a criterion or whose verdict contradicts its criteria, rejection of a criterion without a verification means at plan validation, changes to protected paths without a matching step treated as scope violations, rejection of a first-revision Standard plan with more than one Phase, and acceptance of repair Phases in later revisions of a Standard plan.
+- Host capabilities: Planner Attempts resuming one session, with the worktree updated first and the role-contract baseline taken after the update; check commands present in the Implementer's input; baseline byproducts excluded from change sets; under `scopeEnforcement: host`, rules generated from the Phase, permission options in `args` rejected, a refusal by a generated rule not classified as `MissingEnvironment`, and a `needs_replan` report following the scope-amendment path; subagent use recorded where the host reports it, and `subagents: readOnly` rejected for the Implementer and the Coordinator.
 - Integration tests using actual CLI adapters (optional execution).
 - Fault injection: Abnormal termination immediately after synchronizing AttemptScheduled, immediately after process launch, immediately after implementation completes, immediately after artifact finalization, and after event synchronization but before snapshot update. Confirm existing diffs are preserved and uncertain external operations are not automatically rerun.
 - Replay: Confirm no side effects such as LLM or Git operations, identical state from identical event sequences, and detection of corruption, missing records, and stale references.
@@ -1315,6 +1346,7 @@ The following decisions should be finalized when implementation begins. The host
 - Whether worktree cleanup also removes the host's per-directory session data.
 - Authentication and licensing terms of each host when Bellona is distributed (§11.3).
 - How long a Run waits after a rate-limit rejection before it suspends as `Blocked`.
+- Whether failure-driven replanning should resume the Planner session or start a new one. A resumed session keeps its investigation but may hold on to a defective plan.
 
 ## 22. Architectural commitments
 
