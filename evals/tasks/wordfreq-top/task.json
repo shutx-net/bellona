@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "wordfreq-top",
+  "title": "Report only the most frequent words of a word-frequency tool",
+  "repository": {
+    "kind": "directory",
+    "path": "testdata/repo"
+  },
+  "request": "Add `type WordCount struct { Word string; Count int }` and `Top(counts map[string]int, n int) []WordCount` to package wordfreq. Top returns the n most frequent words in descending order of count, with ties broken alphabetically by word. It returns all words when n exceeds their number, and no words when n is 0 or negative. Also add a `-top N` flag to the command in cmd/wordfreq: with the flag, the command prints only the top N words, in the order Top returns them, as `word count` lines; without the flag, its output stays as it is. Add unit tests for the new behaviour.",
+  "acceptance": {
+    "files": "testdata/acceptance",
+    "checks": [
+      {
+        "id": "acceptance-tests",
+        "argv": ["go", "test", "./..."],
+        "timeout": "2m"
+      }
+    ],
+    "regressionChecks": [
+      {
+        "id": "existing-tests",
+        "argv": ["go", "test", "./..."]
+      }
+    ]
+  },
+  "expectedChangeScope": ["*.go", "cmd/wordfreq/*.go"],
+  "tags": ["go", "multi-file"]
+}
