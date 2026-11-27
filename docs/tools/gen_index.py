@@ -168,7 +168,7 @@ ROWS = [
     ("R-RUN-12", "Bind a session to one role and one worktree, never run two Attempts in one session at once, and never let an Evaluator reuse an Implementer session.", ["5"], "M1b", M, ["T-18"], "An Evaluator must not reuse an Implementer session", None),
     ("R-RUN-13", "Start every Evaluator Attempt in a new session.", ["11.1"], "M3", M, [], "Every Evaluator Attempt starts in a new session", None),
     ("R-RUN-14", "Resume the Planner session for later Planner Attempts, after updating its worktree to the current integration commit and taking the comparison baseline.", ["5"], "M2", M, ["T-10"], "Before a resumed Planner Turn, update the Planner's worktree", None),
-    ("R-RUN-15", "Disallow native subagent delegation for the Implementer and the Coordinator as a role contract, and record subagent use where the host reports it.", ["11.1"], "M1a", M, ["T-10"], "disallow native subagent delegation as a role contract", None),
+    ("R-RUN-15", "Remove the host's tools that start other agents from every role that may not delegate, where the host allows it, check the launch receipt for them, and record subagent use where the host reports it.", ["11.1"], "M1a", M, ["T-10"], "the adapter removes them for every role that may not delegate", None),
     ("R-RUN-16", "If read-only subagents are enabled for the Planner or the Evaluator, treat them as part of the Attempt, and reject the setting for the Implementer and the Coordinator.", ["11.1"], PM, M, ["T-10"], "Configuration validation rejects `subagents: readOnly`", None),
     ("R-RUN-17", "Launch each role as an independent CLI process, with a new process for every Turn in the MVP.", ["11.1"], "M1a", M, [], "launches a new process for every Turn", None),
     ("R-RUN-18", "Probe the capabilities of each target host and answer its open questions before the AgentRuntime contract is frozen.", ["18"], "M0", M, [], "before the AgentRuntime contract is frozen", None),
@@ -217,7 +217,7 @@ ROWS = [
     ("R-WS-05", "Do not save credentials or API keys in artifacts or logs.", ["13"], "M1a", M, [], "Do not intentionally save credentials or API keys", None),
     ("R-WS-06", "Validate the paths, symbolic links, and sizes of artifacts that the engine loads.", ["13"], "M0", M, ["T-06"], "Validate paths, symbolic links, and sizes", None),
     ("R-WS-07", "Do not delete worktrees unconditionally at the end of a Run; check for unpreserved changes first.", ["13"], "M1b", M, ["T-06"], "Do not unconditionally delete worktrees", None),
-    ("R-WS-08", "Never edit harness configuration files or add sandbox arguments, and add no permission arguments unless scope enforcement is enabled.", ["13"], "M1a", M, [], "never adds sandbox arguments", None),
+    ("R-WS-08", "Never edit harness configuration files or add sandbox arguments, and add no argument that grants a permission unless scope enforcement is enabled.", ["13"], "M1a", M, [], "never adds sandbox arguments", None),
     ("R-WS-09", "Use Git worktrees as the only workspace separation.", ["13"], "M1b", M, [], "Use only Git worktrees for workspace separation", None),
     ("R-WS-10", "Leave the host's per-directory session data in place when a worktree is removed, unless the user asks for its removal.", ["13"], "M1b", M, [], "leaves that data in place by default", None),
     # ---------------- Configuration (section 14)
