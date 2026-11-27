@@ -9,6 +9,16 @@
 - Durability: Local file journal, immutable artifacts, explicit reconciliation
 - Scheduling: Bounded parallel DAG execution and isolated phase worktrees are MVP requirements
 
+## Conventions
+
+The key words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as described in RFC 2119 and RFC 8174 when, and only when, they appear in capitals.
+
+The requirements are in §4 to §15, §17 to §19, and §22, except §11.3. In those sections, a sentence in the imperative ("Record…", "Do not…") or a sentence that uses "must" states a requirement with the force of MUST, unless it uses SHOULD or MAY. A sentence about later or optional work, such as a feature to consider after the MVP, is a plan and not a requirement.
+
+The following are informative: §1 to §3, diagrams, JSON and command examples, §11.3, §16, §20, §21, and §23.
+
+Appendix A gives each requirement an identifier, a milestone, and a strength. It adds no rules. The body states each rule; where the two differ, the body prevails and the index is corrected. A rule that the index does not list is still binding.
+
 ## 1. Overview
 
 Bellona is a local-first workflow engine that runs existing coding agents as external processes and controls planning, implementation, evaluation, and verification.
@@ -117,7 +127,7 @@ Because the term Orchestrator can refer to either a program or an LLM, Bellona c
 
 The Coordinator is not a continuously running parent agent. It is launched only when reasoning is needed, such as initial strategy selection, Planner effort selection, failure analysis, replanning, or retry decisions.
 
-The Planner and Evaluator may inspect source code but must not modify it. The table describes logical role contracts, not mandatory OS access controls. Every role runs in a Bellona-managed worktree, never in the user's working tree. Bellona compares the tracked files of the worktree before and after each execution of a read-only role; a change to them is a role contract violation (§14.1), and the output of that Attempt is not accepted. Untracked byproducts of running the software or its tests are not a violation; they are discarded when the worktree is reset (§10.2). Evaluator verification commands run in the Phase worktree after the candidate has been snapshotted (§10.2), or in a dedicated verification worktree checked out at the commit under review. The Evaluator is expected to exercise the software, for example by running it or its tests, and not only to read the diff. A role that can run commands cannot be made read-only by tool restrictions alone, so for such a role the worktree comparison is the check that its contract held.
+The Planner and Evaluator may inspect source code but must not modify it. The table describes logical role contracts, not mandatory OS access controls. Every role runs in a Bellona-managed worktree, never in the user's working tree. Bellona compares the tracked files of the worktree before and after each execution of a read-only role; a change to them is a role contract violation (§14.1), and the output of that Attempt is not accepted. Untracked byproducts of running the software or its tests are not a violation; they are discarded when the worktree is reset (§10.2). Evaluator verification commands run in the Phase worktree after the candidate has been snapshotted (§10.2), or in a dedicated verification worktree checked out at the commit under review. The Evaluator SHOULD exercise the software, for example by running it or its tests, and not only read the diff. A role that can run commands cannot be made read-only by tool restrictions alone, so for such a role the worktree comparison is the check that its contract held.
 
 Agents may report their own completion but cannot determine whether a phase or Run is accepted. The engine verifies the required evidence before granting acceptance.
 
@@ -313,7 +323,7 @@ An Attempt is one execution of one role: an Implementer or Evaluator working on 
 | Semantic rejection | Pass findings to the Implementer; replan if the plan is defective. |
 | Change scope violated | Preserve the worktree state and do not snapshot or integrate it. Have the Implementer remove the out-of-scope changes, or ask the Planner to amend the scope in a new Plan Revision. |
 | Insufficient reasoning | The Coordinator may propose a change in effort. |
-| Missing environment / permissions | Normally block or ask the user. Do not attempt to resolve this by increasing effort. |
+| Missing environment / permissions | Stop as `Blocked` and report the required user action (§14.1). Ask the user instead only when an answer, rather than a change to the environment, resolves it. Do not attempt to resolve this by increasing effort. |
 | Unknown external execution state | Do not automatically rerun before reconciling the workspace, session, and artifacts. |
 | Retry or budget exhausted | A Phase at its retry limit waits in `Recovering` while independent Phases continue. When no Phase can make progress, or a Run-wide limit is reached, mark the Run as `Blocked` and report the reason and recovery steps (§6.3). |
 
@@ -344,7 +354,7 @@ sequenceDiagram
 - When a question is accepted, the engine records its origin, session ID, target revision, and resume state. In the MVP, new dispatches across the Run stop; already-running independent Attempts are supervised until they finish safely, and their results are saved. Commit `WaitingForUser` only after all execution processes are reaped. Defer new integrations after the question arises and reconcile assumptions after answers arrive. Continuing to dispatch independent phases while limiting the scope of a question is a future feature.
 - In interactive mode, only Bellona waits on standard input. Agent CLI processes have exited normally, and no inference requests are made while waiting for input.
 - In non-interactive mode, persist questions and results from already-started Attempts, reap all execution processes, and then exit Bellona itself. Use a dedicated exit code to signal pending input and allow answers and resumption later. The exact exit code will be defined during implementation.
-- Waiting for user input is a normal state and does not consume failure, retry, or replan counts. Execution time limits generally apply to active processing; elapsed time awaiting input is measured separately.
+- Waiting for user input is a normal state and does not consume failure, retry, or replan counts. Execution time limits apply to active processing (§11.2). Time spent waiting for input is measured separately and, by default, does not count toward them.
 - Resume the originating session after all mandatory questions have been answered. The resumed execution is the next Turn of the same Attempt, in the same worktree. If the session cannot be restored, mark the Attempt `Abandoned` and continue in a new Attempt and a new session of the same role using the original request, current plan, questions, and answers. Reconcile workspace state before resuming work that makes actual changes.
 - Answers to Planner questions (including Other) are interpreted by the Planner and incorporated into the plan. Do not pass them directly to the Implementer and bypass plan validation. If an answer to another role requires a plan change, return to the Planner and validate the revised plan.
 - Follow-up questions are allowed. Do not fill in unanswered questions automatically on EOF, cancellation, or partial answers. Handle the harness's own tool-permission approvals separately, without altering existing approval settings. The only permission rules that Bellona adds are those of scope enforcement, when the user enables it (§14).
@@ -735,7 +745,7 @@ Everything beyond the session, outcome, output, and exit code is optional, and s
 - **Launch receipt.** When the host reports the configuration it applied at session start, the adapter stores it with the Attempt: model, working directory, session ID, host version, permission mode, available tools, loaded extensions, sandbox state, and credential source, but never the credential. A receipt that contradicts a value the adapter itself set, namely the working directory, the session ID, or the permission mode under scope enforcement (§14), fails the Attempt as `MissingEnvironment`. Values that come from the user's host settings or from `args`, such as tools and permission mode, are recorded but not compared, because the adapter does not interpret `args`. The receipt matters because a host may ignore invalid settings without reporting an error.
 - **Refused calls.** Always record the calls that the host refused. A refusal is evidence, not an error: an agent may complete its task another way, and refusals are expected for a role whose tools are restricted. Use refusals to classify a failure only when the Attempt did not produce acceptable output. If a refused call was needed for the task, that failure is `MissingEnvironment`. A refusal caused by a rule that Bellona generated for scope enforcement is different: it means the plan's scope is too narrow, not that the environment is missing. The Implementer reports `needs_replan`, the engine passes the refused paths recorded for the Attempt to the Planner, and recovery follows the scope-amendment path (§6).
 - **Environment.** The adapter builds the environment of the agent process explicitly instead of inheriting Bellona's. It passes a baseline needed to run the host, such as the home directory, the search path, and the locale, plus the variables named in `agents.<role>.env`. Record the names in the manifest, never the values. Host variables can override the model, the effort level, or the credentials of a run, so an inherited environment would make the requested values unreliable.
-- **Prompt layout.** Keep the role definition identical across the Attempts of a role in a Run, and put everything that varies, such as the Phase, the inputs, and the working directory, in the user message. A host that caches prompts can then reuse the role definition across Attempts and worktrees. The benefit is not established: record cache usage for every Attempt and measure it in M0 (§11.3).
+- **Prompt layout.** The role definition SHOULD be identical across the Attempts of a role in a Run, and everything that varies, such as the Phase, the inputs, and the working directory, SHOULD go in the user message. A host that caches prompts can then reuse the role definition across Attempts and worktrees. The benefit is not established: record cache usage for every Attempt and measure it in M0 (§11.3).
 
 | Runtime | Initial integration | Possible future integration |
 | --- | --- | --- |
@@ -888,7 +898,7 @@ Manage input waiting through events as well. Persist and synchronize finalized q
 {"type":"RunResumed","payload":{"requestId":"req-01"}}
 ```
 
-During replay, reconstruct only the presence of answers and the waiting state. Resume as a new execution after confirming that all required answers are present. Questions and answers may contain confidential information; avoid unnecessary duplication in logs.
+During replay, reconstruct only the presence of answers and the waiting state. Resume as a new execution after confirming that all required answers are present. Questions and answers may contain confidential information; logs SHOULD NOT duplicate them.
 
 ### Durability and concurrency
 
@@ -1101,7 +1111,7 @@ Host enforcement reduces wasted Attempts; it is not a boundary. A permitted comm
 
 `agents.<role>.subagents` states whether the Planner or the Evaluator may delegate read-only investigation to host subagents (§11.1). `agents.<role>.env` names additional environment variables to pass to the agent process (§11). `execution.maxAgentSteps` and `execution.maxTurnCostUsd` cap one Turn where the host supports it (§14.2). `verification.protectedPaths` protects existing tests and check configuration (§9).
 
-Configuration precedence is normally explicit CLI settings, user settings, trusted project settings, and built-in defaults, in that order. Lower-priority settings and LLM proposals must not weaken operation restrictions or budget ceilings. After Run start, execution limits change only through a user policy amendment (§6.3).
+Configuration precedence is explicit CLI settings, user settings, trusted project settings, and built-in defaults, in that order. Lower-priority settings and LLM proposals must not weaken operation restrictions or budget ceilings. After Run start, execution limits change only through a user policy amendment (§6.3).
 
 ### 14.1 Error classification and retry policy
 
@@ -1113,8 +1123,8 @@ Do not retry every error indiscriminately. Persist separate counters for transpo
 | `InvalidAgentOutput` | Request structured-output repair within the limit. If code changes have already occurred, reconcile first. When the host has already retried invalid structured output internally, count that as one repair. |
 | `VerificationFailed`, `SemanticRejection` | Provide evidence and proceed to implementation repair or failure analysis. |
 | `PlanInvalid` | Return to the Planner. |
-| `SessionUnavailable` | After reconciling workspace state, consider continuing with a new Session. |
-| `AuthenticationFailed`, `MissingEnvironment` | Normally stop and report required user actions. |
+| `SessionUnavailable` | Reconcile workspace state, then continue with a new Session from the handoff context when the persisted artifacts and the workspace state allow it (§12.3). |
+| `AuthenticationFailed`, `MissingEnvironment` | Stop as `Blocked` and report the required user actions, or ask the user when an answer resolves it (§6). |
 | `WorkspaceConflict` | Preserve the conflict for reconciliation or user confirmation. |
 | `ScopeViolation` | An Implementer changed files outside the Phase's change scope. Preserve the worktree state and do not snapshot or integrate it. Proceed to implementation repair that removes the out-of-scope changes, or to a scope amendment by the Planner in a new Plan Revision. |
 | `RoleContractViolation` | A read-only role changed tracked files in its worktree. Preserve the diff as evidence, do not accept the Attempt's output, restore the worktree to the recorded commit, and retry in a new Attempt within the limit. |
@@ -1171,7 +1181,7 @@ Consider MCP, external APIs, a TUI, and real-time dashboards after the core stab
 
 ### 15.1 Observability and optional daemon
 
-`status` and `inspect` read state snapshots or committed events. Add `events` and `usage` as needed. Distinguish Domain Events (state reconstruction), Agent Events (host observations), Process Logs (stdout/stderr and similar), Decision Records (effort and recovery rationale), and Evidence (verification results). Correlate them by Run ID, Attempt ID, and Session ID. Avoid unnecessary duplication of confidential data, and manage detailed log retention separately from data required for state reconstruction.
+`status` and `inspect` read state snapshots or committed events. `events` and `usage` commands MAY be added. Distinguish Domain Events (state reconstruction), Agent Events (host observations), Process Logs (stdout/stderr and similar), Decision Records (effort and recovery rationale), and Evidence (verification results). Correlate them by Run ID, Attempt ID, and Session ID. Logs SHOULD NOT duplicate confidential data. Manage detailed log retention separately from data required for state reconstruction.
 
 Bellona is daemon-optional. The MVP foreground CLI starts when a Run begins and exits on completion or suspension. Non-interactive Runs waiting for input also exit after persistence. Keep the Core Engine independent of CLI input/output and persistent execution modes so future entry points such as `serve`, `submit`, and `attach` can be added. Continuous monitoring, cross-Run scheduling, and automatic recovery are not initial requirements.
 
