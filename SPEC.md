@@ -355,7 +355,7 @@ sequenceDiagram
 - In interactive mode, only Bellona waits on standard input. Agent CLI processes have exited normally, and no inference requests are made while waiting for input.
 - In non-interactive mode, persist questions and results from already-started Attempts, reap all execution processes, and then exit Bellona itself. Use a dedicated exit code to signal pending input and allow answers and resumption later. The exact exit code will be defined during implementation.
 - Waiting for user input is a normal state and does not consume failure, retry, or replan counts. Execution time limits apply to active processing (§11.2). Time spent waiting for input is measured separately and, by default, does not count toward them.
-- Resume the originating session after all mandatory questions have been answered. The resumed execution is the next Turn of the same Attempt, in the same worktree. If the session cannot be restored, mark the Attempt `Abandoned` and continue in a new Attempt and a new session of the same role using the original request, current plan, questions, and answers. Reconcile workspace state before resuming work that makes actual changes.
+- Resume the originating session after all mandatory questions have been answered. The resumed execution is the next Turn of the same Attempt, in the same worktree. If the session cannot be restored, mark the Attempt `Abandoned` and continue in a new Attempt and a new session of the same role using the original request, current plan, questions, and answers. If one of these handoff inputs is missing, stop as `Blocked` instead. Reconcile workspace state before resuming work that makes actual changes.
 - Answers to Planner questions (including Other) are interpreted by the Planner and incorporated into the plan. Do not pass them directly to the Implementer and bypass plan validation. If an answer to another role requires a plan change, return to the Planner and validate the revised plan.
 - Follow-up questions are allowed. Do not fill in unanswered questions automatically on EOF, cancellation, or partial answers. Handle the harness's own tool-permission approvals separately, without altering existing approval settings. The only permission rules that Bellona adds are those of scope enforcement, when the user enables it (§14).
 
@@ -687,7 +687,7 @@ Worktree separation does not isolate databases, ports, caches, or similar resour
 6. After all phases are accepted, perform mandatory final verification on the final integration commit and, unless `independentReview` is `none`, the final evaluation. Subsequent integrations may invalidate the semantic assumptions of earlier phases; never complete the Run if final verification fails.
 7. The integration ref only moves forward within a Run. Replanning, repair, and superseded Phases add commits on top of the current integration commit and never rewind or rewrite it (§6).
 
-When a Run is `Completed`, Bellona reports the final integration commit and the name of the Bellona-managed ref that points at it. The user applies the result with ordinary Git operations such as merge or cherry-pick. This is the MVP's way of delivering the result; a dedicated apply command is optional later work.
+When a Run is `Completed`, Bellona reports the final integration commit and the name of the Bellona-managed ref that points at it. The user applies the result with ordinary Git operations such as merge or cherry-pick. This is how the MVP delivers the result; it has no apply command.
 
 Even with the same plan, integration results may vary with parallel completion order and external LLM responses. Bellona makes execution order, base commits, integration commits, and decisions traceable, but does not guarantee identical source output on every execution.
 
@@ -840,7 +840,7 @@ The Agent SDK overview (https://code.claude.com/docs/en/agent-sdk/overview) stat
 
 ## 12. Persistence — file-based, no SQLite
 
-Create per-Run files under XDG State Home (default `~/.local/state`). The initial implementation assumes a local filesystem and does not guarantee strong crash durability on network filesystems.
+Create per-Run files under XDG State Home (default `~/.local/state`). The initial implementation assumes a local filesystem and does not guarantee strong crash durability on network filesystems. Bellona does not delete plans, events, or logs automatically; they are removed only by an explicit user command.
 
 ```text
 $XDG_STATE_HOME/bellona/
@@ -963,7 +963,7 @@ Configure size limits per artifact type, individual event, CLI output record, qu
 | Workflow context | Bellona | Store original requests, plans, decisions, questions and answers, results, evaluations, and verification evidence in JSON/JSONL. |
 | Code context | Git worktree | Preserve the base commit, current diff, and required integration results. |
 
-Bellona does not implement its own conversation store or context compaction. If a session is lost, do not assume that the original conversation can be reconstructed completely; assess whether work can continue in a new session using persisted artifacts and workspace state. Apply the same approach when a Runtime does not support resumption.
+Bellona does not implement its own conversation store or context compaction. If a session is lost, do not assume that the original conversation can be reconstructed completely; continue in a new session from persisted artifacts and workspace state. Stop as `Blocked` only when a handoff input named in §6.1 is missing. Apply the same approach when a Runtime does not support resumption.
 
 The Context Builder selects the minimum information needed by each role, providing reference paths and necessary summaries as input. The MVP uses fixed role-specific input contracts; advanced retrieval, compression, and adaptive selection are future features.
 
@@ -1006,7 +1006,7 @@ Use only Git worktrees for workspace separation in the initial implementation. B
 - The prohibition on Planner/Evaluator source edits, Implementer change scopes, and prohibition on direct control-state writes are logical operation contracts. Address detectable violations through pre/post-execution diff inspection, artifact validation, and transition guards.
 - Do not intentionally save credentials or API keys in artifacts or logs. Do not prioritize instructions embedded in issues, code, logs, or external documents over user approvals or engine policy.
 - Validate paths, symbolic links, and sizes of artifacts loaded by the engine; reject unexpected paths and invalid input.
-- Do not unconditionally delete worktrees when a Run ends. Check for unpreserved changes and retain artifacts required for recovery. A host may keep session data for each working directory outside the worktree; removing a worktree does not remove that data (§21).
+- Do not unconditionally delete worktrees when a Run ends. Check for unpreserved changes and retain artifacts required for recovery. A host may keep session data for each working directory outside the worktree. Bellona leaves that data in place by default and removes it only when the user asks for it explicitly.
 
 ### Trust assumptions and limitations
 
@@ -1097,7 +1097,7 @@ By default, Bellona adds no permission arguments of its own. It never adds sandb
 
 Refused calls are recorded and classified as described in §11.
 
-`agents.<role>.hostCustomization` states how much of the user's and the project's host customization the role loads. `inherit`, the default, loads what the host normally loads: instruction files, memory, extensions, hooks, and tool servers. `isolated` starts the host without them, where the adapter supports it. Isolation also removes the project's instruction files, so it is not the default. It suits roles that need independence more than project conventions. In particular, host memory that is shared across worktrees can carry an Implementer's notes to the Evaluator.
+`agents.<role>.hostCustomization` states how much of the user's and the project's host customization the role loads. `inherit` loads what the host normally loads: instruction files, memory, extensions, hooks, and tool servers. `isolated` starts the host without them. The default is `inherit`, except for the Evaluator, whose default is `isolated` where the adapter supports it. Where it does not, the Evaluator runs with `inherit`, and the Run records that isolation was not applied. An explicit `isolated` on an adapter without the capability fails validation (§11). Isolation also removes the project's instruction files, so it is not the default for the other roles. The Evaluator's default favours independence: host memory that is shared across worktrees can carry an Implementer's notes to the Evaluator. This default is provisional (§21).
 
 `agents.implementer.scopeEnforcement` chooses when the change scope is enforced. With `detect`, the default, the engine inspects the change set after the Turn (§10.2). With `host`, the adapter also generates host permission rules for each Implementer Attempt, so that an edit outside the scope is refused when it is attempted and the agent can adjust within the same Turn:
 
@@ -1109,7 +1109,7 @@ In this mode the adapter owns the role's permission mode and permission-rule arg
 
 Host enforcement reduces wasted Attempts; it is not a boundary. A permitted command, such as a test runner, can still write anywhere, and with `hostCustomization: inherit` the user's own host rules may widen what is allowed. The engine's inspection after the Turn remains the authority. An Implementer that needs a file outside its scope reports `needs_replan`, and the Planner receives the refused paths (§11).
 
-`agents.<role>.subagents` states whether the Planner or the Evaluator may delegate read-only investigation to host subagents (§11.1). `agents.<role>.env` names additional environment variables to pass to the agent process (§11). `execution.maxAgentSteps` and `execution.maxTurnCostUsd` cap one Turn where the host supports it (§14.2). `verification.protectedPaths` protects existing tests and check configuration (§9).
+`agents.<role>.subagents` states whether the Planner or the Evaluator may delegate read-only investigation to host subagents (§11.1). `agents.<role>.env` names additional environment variables to pass to the agent process (§11). `execution.maxAgentSteps` and `execution.maxTurnCostUsd` cap one Turn where the host supports it (§14.2). `verification.protectedPaths` protects existing tests and check configuration (§9). `execution.requirePlanApproval`, `true` by default, decides whether a valid plan waits for the user's approval (§6); skipping approval according to risk is deferred until a risk criterion exists.
 
 Configuration precedence is explicit CLI settings, user settings, trusted project settings, and built-in defaults, in that order. Lower-priority settings and LLM proposals must not weaken operation restrictions or budget ceilings. After Run start, execution limits change only through a user policy amendment (§6.3).
 
@@ -1119,11 +1119,12 @@ Do not retry every error indiscriminately. Persist separate counters for transpo
 
 | Error / outcome | Action |
 | --- | --- |
-| `TransientError`, `RateLimitExceeded` | Only when external side-effect outcomes are not uncertain, use exponential backoff with a cap and jitter and respect host-provided wait instructions. If the host already retries internally, do not add Bellona retries on top of it. A rate-limit rejection is a Run-wide event, because the agent processes of a Run draw on the same quota: stop new dispatches, and use the reset time as the next eligible retry time when the host reports one. |
+| `TransientError` | Only when external side-effect outcomes are not uncertain, use exponential backoff with a cap and jitter and respect host-provided wait instructions. If the host already retries internally, do not add Bellona retries on top of it. |
+| `RateLimitExceeded` | A rate-limit rejection is a Run-wide event, because the agent processes of a Run draw on the same quota. Stop new dispatches, let running Attempts finish, and suspend the Run as `Blocked` without waiting; report the reset time when the host gives one. The rejected Attempt does not consume a retry counter. This rule is provisional (§21). |
 | `InvalidAgentOutput` | Request structured-output repair within the limit. If code changes have already occurred, reconcile first. When the host has already retried invalid structured output internally, count that as one repair. |
 | `VerificationFailed`, `SemanticRejection` | Provide evidence and proceed to implementation repair or failure analysis. |
 | `PlanInvalid` | Return to the Planner. |
-| `SessionUnavailable` | Reconcile workspace state, then continue with a new Session from the handoff context when the persisted artifacts and the workspace state allow it (§12.3). |
+| `SessionUnavailable` | Reconcile workspace state, then continue with a new Session from the handoff context (§6.1). Stop as `Blocked` only when a handoff input is missing. |
 | `AuthenticationFailed`, `MissingEnvironment` | Stop as `Blocked` and report the required user actions, or ask the user when an answer resolves it (§6). |
 | `WorkspaceConflict` | Preserve the conflict for reconciliation or user confirmation. |
 | `ScopeViolation` | An Implementer changed files outside the Phase's change scope. Preserve the worktree state and do not snapshot or integrate it. Proceed to implementation repair that removes the out-of-scope changes, or to a scope amendment by the Planner in a new Plan Revision. |
@@ -1133,7 +1134,7 @@ Do not retry every error indiscriminately. Persist separate counters for transpo
 | `BudgetExceeded` | A Run-wide budget is exhausted. Stop. |
 | `UnknownExecutionOutcome` | `RecoveryRequired`. Do not automatically rerun until resolved. |
 
-Avoid redundant retry loops between the harness and Bellona. Do not casually classify an unknown error as transient. Record the reason, count, and next eligible retry time for each retry so that restarting the process cannot reset the limits.
+Avoid redundant retry loops between the harness and Bellona. Do not classify an unknown error as transient. If it occurs after the launch intent of the affected Attempt was persisted, treat it as `UnknownExecutionOutcome`; otherwise stop as `Blocked` and report it. Record the reason, count, and next eligible retry time for each retry so that restarting the process cannot reset the limits.
 
 ### 14.2 Execution budgets
 
@@ -1160,7 +1161,7 @@ bellona answer <run-id> <request-id> Q-001 --select session
 bellona answer <run-id> <request-id> Q-001 --text "Use Entra ID for SSO"
 ```
 
-Initially, use foreground execution and simple text output. `approve` records the user's response to a plan approval (§6), and `resume --amend` records a policy amendment before resuming a `Blocked` Run (§6.3). When a Run is `Completed`, `status` and `inspect` show the final integration commit and its ref (§10.2). Cancellation from a separate process without a persistent daemon requires additional implementation of safe process identification or cancellation-request delivery. Until then, use signals sent to the running CLI.
+Initially, use foreground execution and simple text output. `approve` records the user's response to a plan approval (§6), and `resume --amend` records a policy amendment before resuming a `Blocked` Run (§6.3). When a Run is `Completed`, `status` and `inspect` show the final integration commit and its ref (§10.2). `cancel` from a separate process writes a cancellation request file into the Run directory; the control loop of the running engine reads it and cancels as §11.2 describes. For a suspended Run, which has no control loop, `cancel` acquires the Run lock and records the cancellation itself. A signal sent to the running CLI cancels it as well.
 
 In interactive mode, display numbered choices as shown below. Bellona adds Other.
 
@@ -1264,15 +1265,18 @@ Consider third-party libraries individually only when actual requirements arise 
 | Milestone | Deliverables | Acceptance conditions |
 | --- | --- | --- |
 | M0 — Core contracts | Domain types, FSM (Run, Phase, and Attempt transition tables), fake runtime, file journal, host capability probe | Reject invalid state transitions and reconstruct the same internal state from events. Record how each target host handles non-interactive permissions, session resumption, structured output, and effort, and answer the open questions listed for the host (§11.3), before the AgentRuntime contract is frozen. |
-| M1 — Agent runtime | First CLI adapter, process and log management, isolated worktrees with setup and baseline checks, concurrency slots, fixed workflow | Execute from planning through final verification in a test repository and supervise at least two independent agents concurrently. Do not declare completion on failure. |
+| M1a — Agent runtime | Claude Code adapter, process and log management, normalized result, launch receipt, timeouts and cancellation | Launch one agent through the adapter in a temporary test repository, capture and validate its result, record the launch intent before launch, and enforce the Turn timeout and staged cancellation. |
+| M1b — Workspace pipeline | Isolated worktrees with setup and baseline checks, scope inspection and candidate snapshot, mechanical verification, fast-forward integration, concurrency slots, fixed workflow | Execute a hand-written plan through final verification in a test repository and supervise at least two independent agents concurrently. Do not declare completion on failure. |
 | M2 — Adaptive planning | Coordinator, Planner, per-phase effort, plan types and validation, HITL | Reject unsupported effort values and record actual launch requests for each Phase. Verify choice selection, Other, non-interactive answer persistence, and resumption. |
 | M3 — Verification and recovery | Independent Evaluator, retries, replanning, recovery from abnormal termination | Prevent acceptance with failed, missing, or stale evidence and safely stop on uncertain Attempts. |
 | M4 — Parallel DAG (MVP) | DAG Scheduler, basic resource locks, controlled integration, partial success, HITL, and recovery under concurrency | Execute at least two independent phases concurrently using integration-test processes, respect dependencies, limits, and conflicts, and require post-integration verification. Confirm concurrent launches with real CLIs as well. |
-| M5 — Second runtime | The other Claude Code/Codex adapter | Execute the same workflow with another harness and report host-specific limitations. |
+| M5 — Second runtime | Codex adapter | Execute the same workflow with another harness and report host-specific limitations. |
 | M6 — Advanced scheduling | Session reuse optimization, dynamic concurrency, advanced resource locks | Improve execution efficiency based on measurements while preserving mandatory gates. |
 | M7 — Adaptation & extensibility | Direct strategy, strategy selection by the Coordinator, declarative definitions and MCP if needed | Switch configurations while preserving mandatory constraints. |
 
-Appendix A assigns each requirement to one of these milestones. The first practical MVP covers M0–M4. It is not complete until M4 delivers parallel DAG execution and integration. Run manifests, persisted Attempt launch intent, persistence ordering, error classification and retry limits, process termination, and reconciliation are mandatory MVP requirements. Complete manifests, events/reducer, and locking in M0; process management and fixed input contracts in M1; questions, answers, and revision checks in M2; and post-crash reconciliation and error-specific recovery in M3. The initial implementation may use only one harness, but design the adapter interface to be vendor-independent. Begin evaluation infrastructure, worktree lifecycle management, and logical state-gate testing in the first milestone.
+Appendix A assigns each requirement to one of these milestones. The first practical MVP covers M0–M4. It is not complete until M4 delivers parallel DAG execution and integration. Run manifests, persisted Attempt launch intent, persistence ordering, error classification and retry limits, process termination, and reconciliation are mandatory MVP requirements. Complete the manifest freeze, events/reducer, and locking in M0; process management in M1a, where Runtime information and the launch receipt join the Run record; fixed input contracts in M1b; questions, answers, and revision checks in M2; and post-crash reconciliation and error-specific recovery in M3. The first adapter is Claude Code; design the adapter interface to be vendor-independent. Begin evaluation infrastructure, worktree lifecycle management, and logical state-gate testing in the first milestone.
+
+M1 is divided in two. M1a covers launching and supervising one agent and recording its result; it needs no Bellona-managed worktree, plan, or verification. M1b depends on M1a and adds worktrees, verification, integration, and concurrency. In M1b the plan is hand-written and enters as the Planner's output through the fake runtime, so the Run passes through `Planning` and `PlanValidation`, and no transition is added. M1b runs without plan approval, which arrives with the approval commands in M2.
 
 Resuming the Planner session and passing check commands to the Implementer are default behaviour and belong to M2. Host scope enforcement and read-only subagents are optional, off by default, and not required for the MVP; schedule them after M4.
 
@@ -1345,20 +1349,17 @@ These specifications inform the design; they do not imply that Bellona has equiv
 
 The following decisions should be finalized when implementation begins. The host capability items affect the AgentRuntime contract and the configuration schema, so settle them with the M0 capability probe before those are frozen. The other items do not require a change to the initial architecture.
 
-- Whether Claude Code or Codex will be the first adapter.
-- Whether user plan approval is mandatory by default or risk-based.
 - Formal typed JSON fields and validation contracts, and the scope of any JSON Schema descriptors.
-- Exact CLI operations for preserving and deleting worktrees. Result delivery follows §10.2; whether to add a dedicated apply command is open.
-- Retention and deletion policies for plans, events, and logs.
+- Exact CLI operations for preserving and deleting worktrees.
 - How to verify host-specific budget, effort, session-resumption, structured-output, and non-interactive permission capabilities.
 - Manifest compatibility rules, migration procedures, and identification of surviving Attempt processes.
 - Formal error codes, retry and timeout defaults, and artifact size limits.
 - Default MVP concurrency, formal configuration contracts for shared-resource IDs, and naming and retention of internal integration refs. The basic integration procedure follows §10.2.
-- Which host options implement `hostCustomization: isolated`, and whether `inherit` should remain the default for every role.
-- Whether worktree cleanup also removes the host's per-directory session data.
+- Which host options implement `hostCustomization: isolated`. Revisit the Evaluator's `isolated` default once it is known whether the host reads or writes shared memory in non-interactive runs.
 - Authentication and licensing terms of each host when Bellona is distributed (§11.3).
-- How long a Run waits after a rate-limit rejection before it suspends as `Blocked`.
+- Whether to wait for a short reset time after a rate-limit rejection instead of suspending the Run, once the host is known to report the reset time reliably.
 - Whether failure-driven replanning should resume the Planner session or start a new one. A resumed session keeps its investigation but may hold on to a defective plan.
+- How the Direct strategy leaves out planning: by a transition or by a task contract that the engine generates. Decide when M7 starts.
 
 ## 22. Architectural commitments
 
@@ -1396,8 +1397,8 @@ The following decisions should be finalized when implementation begins. The host
 
 | Priority | Required design elements |
 | --- | --- |
-| P0 — MVP | Event store/reducer, Attempt management and Run locking, Run manifest, artifact references and hashes, independent CLI launch and termination, error classification and limits, reconciliation, HITL, fixed role-specific context, basic verification and execution-time management, parallel DAG scheduler, concurrency limits, basic resource locks, Phase worktrees, serialized integration and post-integration verification, and preservation of partial successes. |
-| P1 — Hardening | Advanced context builder, usage and budget management, detailed event and log inspection, heartbeat/idle detection, and additional compatibility and recovery tests. |
+| P0 — MVP | Event store/reducer, Attempt management and Run locking, Run manifest, artifact references and hashes, independent CLI launch and termination, error classification and limits, reconciliation, HITL, fixed role-specific context, basic verification and execution-time management, per-Turn caps and usage recording, parallel DAG scheduler, concurrency limits, basic resource locks, Phase worktrees, serialized integration and post-integration verification, and preservation of partial successes. |
+| P1 — Hardening | Advanced context builder, advanced budget allocation and cross-Run usage aggregation, detailed event and log inspection, heartbeat/idle detection, and additional compatibility and recovery tests. |
 | P2 — Scheduling optimization | Dynamic concurrency, cross-Run and advanced resource locks, scope-limited HITL, and snapshot optimization when needed. |
 | P3 — Extensibility | Optional daemon, MCP, external API, and declarative format when multiple workflows are needed. |
 
@@ -1409,7 +1410,7 @@ This index gives each requirement of the body an identifier, the milestone in wh
 
 This appendix is generated by `docs/tools/gen_index.py`. To change it, edit the rows in that script and run it; do not edit the tables by hand.
 
-- **Milestone**: M0 to M7 as defined in §18. M0 to M4 form the MVP and correspond to P0 in §23. `Post-MVP` marks hardening items that §23 lists as P1 and optional features that have no milestone. M6 corresponds to P2, and M7 to P3.
+- **Milestone**: the milestones of §18, where M1 is divided into M1a and M1b. M0 to M4 form the MVP and correspond to P0 in §23. `Post-MVP` marks hardening items that §23 lists as P1 and optional features that have no milestone. M6 corresponds to P2, and M7 to P3.
 - **Strength**: MUST, SHOULD, or MAY as defined in Conventions.
 - **Tests**: the items of §19 that name the behaviour. A dash means that no deterministic test in §19 names it yet. T-11, the tests with real CLI adapters, is not counted as coverage.
 - A requirement that begins with "If … enabled" applies only when that optional feature is offered.
@@ -1418,10 +1419,11 @@ This appendix is generated by `docs/tools/gen_index.py`. To change it, edit the 
 
 | Milestone | Requirements |
 | --- | --- |
-| M0 | R-FSM-01, R-FSM-02, R-FSM-03, R-ART-01, R-SCH-07, R-RUN-18, R-PER-01, R-PER-02, R-PER-03, R-PER-04, R-PER-05, R-PER-06, R-PER-07, R-MAN-01, R-MAN-02, R-WS-06, R-CFG-01, R-CLI-04, R-TECH-01, R-TECH-02, R-TECH-03 |
-| M1 | R-ROLE-02, R-FSM-04, R-FSM-05, R-FSM-06, R-FSM-18, R-ART-02, R-ART-06, R-ART-07, R-VER-01, R-VER-02, R-VER-03, R-VER-04, R-SCH-03, R-SCH-06, R-INT-01, R-INT-02, R-INT-03, R-INT-04, R-INT-06, R-INT-09, R-INT-10, R-INT-12, R-RUN-01, R-RUN-02, R-RUN-03, R-RUN-04, R-RUN-05, R-RUN-06, R-RUN-07, R-RUN-09, R-RUN-10, R-RUN-12, R-RUN-15, R-RUN-17, R-RUN-20, R-PROC-01, R-PROC-02, R-PROC-03, R-PROC-04, R-PROC-05, R-PER-08, R-PER-09, R-REC-01, R-REC-05, R-CTX-01, R-CTX-02, R-MAN-03, R-MAN-04, R-WS-01, R-WS-02, R-WS-03, R-WS-05, R-WS-07, R-WS-08, R-WS-09, R-CFG-02, R-CFG-03, R-ERR-05, R-ERR-06, R-BUD-01, R-BUD-02, R-BUD-03, R-CLI-01, R-CLI-05, R-CLI-06 |
-| M2 | R-ROLE-01, R-FSM-07, R-FSM-08, R-HITL-01, R-HITL-02, R-HITL-03, R-HITL-04, R-HITL-05, R-HITL-06, R-HITL-07, R-HITL-08, R-HITL-09, R-HITL-10, R-HITL-11, R-HITL-12, R-HITL-13, R-HITL-14, R-HITL-15, R-EFF-01, R-EFF-02, R-EFF-03, R-EFF-04, R-ART-03, R-ART-04, R-ART-05, R-ART-10, R-VER-05, R-VER-06, R-SCH-01, R-RUN-08, R-RUN-11, R-RUN-14, R-CTX-04, R-WS-04, R-CLI-02 |
-| M3 | R-ROLE-03, R-FSM-09, R-FSM-10, R-FSM-11, R-FSM-12, R-FSM-13, R-FSM-14, R-FSM-15, R-FSM-16, R-EFF-05, R-ART-08, R-ART-09, R-VER-07, R-VER-08, R-VER-09, R-SCH-02, R-SCH-10, R-INT-05, R-RUN-13, R-PROC-06, R-REC-02, R-REC-03, R-REC-04, R-CTX-03, R-ERR-01, R-ERR-02, R-ERR-04, R-CLI-03 |
+| M0 | R-FSM-01, R-FSM-02, R-FSM-03, R-ART-01, R-SCH-07, R-RUN-18, R-PER-01, R-PER-02, R-PER-03, R-PER-04, R-PER-05, R-PER-06, R-PER-07, R-PER-10, R-MAN-01, R-MAN-02, R-WS-06, R-CFG-01, R-CLI-04, R-TECH-01, R-TECH-02, R-TECH-03 |
+| M1a | R-FSM-06, R-RUN-01, R-RUN-02, R-RUN-03, R-RUN-04, R-RUN-05, R-RUN-06, R-RUN-07, R-RUN-09, R-RUN-10, R-RUN-15, R-RUN-17, R-RUN-20, R-PROC-01, R-PROC-02, R-PROC-03, R-PROC-04, R-PROC-05, R-PER-08, R-PER-09, R-REC-01, R-REC-05, R-CTX-01, R-MAN-03, R-MAN-04, R-WS-05, R-WS-08, R-CFG-03, R-ERR-05, R-BUD-01, R-BUD-02, R-BUD-03, R-CLI-05, R-CLI-06 |
+| M1b | R-ROLE-02, R-FSM-04, R-FSM-05, R-FSM-18, R-ART-02, R-ART-06, R-ART-07, R-VER-01, R-VER-02, R-VER-03, R-VER-04, R-VER-07, R-SCH-03, R-SCH-06, R-INT-01, R-INT-02, R-INT-03, R-INT-04, R-INT-06, R-INT-09, R-INT-10, R-INT-12, R-RUN-12, R-CTX-02, R-WS-01, R-WS-02, R-WS-03, R-WS-07, R-WS-09, R-WS-10, R-CFG-02, R-ERR-06, R-CLI-01, R-CLI-08 |
+| M2 | R-ROLE-01, R-FSM-07, R-FSM-08, R-FSM-19, R-HITL-01, R-HITL-02, R-HITL-03, R-HITL-04, R-HITL-05, R-HITL-06, R-HITL-07, R-HITL-08, R-HITL-09, R-HITL-10, R-HITL-11, R-HITL-12, R-HITL-13, R-HITL-14, R-HITL-15, R-EFF-01, R-EFF-02, R-EFF-03, R-EFF-04, R-ART-03, R-ART-04, R-ART-05, R-ART-10, R-VER-05, R-VER-06, R-SCH-01, R-RUN-08, R-RUN-11, R-RUN-14, R-CTX-04, R-WS-04, R-CLI-02 |
+| M3 | R-ROLE-03, R-FSM-09, R-FSM-10, R-FSM-11, R-FSM-12, R-FSM-13, R-FSM-14, R-FSM-15, R-FSM-16, R-EFF-05, R-ART-08, R-ART-09, R-VER-08, R-VER-09, R-SCH-02, R-SCH-10, R-INT-05, R-RUN-13, R-PROC-06, R-REC-02, R-REC-03, R-REC-04, R-CTX-03, R-ERR-01, R-ERR-02, R-ERR-04, R-ERR-07, R-CLI-03 |
 | M4 | R-FSM-17, R-SCH-04, R-SCH-05, R-SCH-08, R-SCH-09, R-SCH-11, R-RES-01, R-RES-02, R-RES-03, R-RES-04, R-INT-07, R-INT-08, R-INT-11, R-ERR-03, R-TECH-04 |
 | M5 | R-RUN-19 |
 | M6 | R-SCH-12 |
@@ -1433,7 +1435,7 @@ This appendix is generated by `docs/tools/gen_index.py`. To change it, edit the 
 | ID | Requirement | Section | Milestone | Strength | Tests |
 | --- | --- | --- | --- | --- | --- |
 | R-ROLE-01 | Launch the Coordinator only when reasoning is needed; it is not a continuously running parent agent. | §4 | M2 | MUST | — |
-| R-ROLE-02 | Let agents report completion, but grant acceptance only in the engine, after it has verified the required evidence. | §4 | M1 | MUST | — |
+| R-ROLE-02 | Let agents report completion, but grant acceptance only in the engine, after it has verified the required evidence. | §4 | M1b | MUST | — |
 | R-ROLE-03 | Have the Evaluator exercise the software, for example by running it or its tests, and not only read the diff. | §4 | M3 | SHOULD | — |
 
 ### State model and gates
@@ -1443,9 +1445,9 @@ This appendix is generated by `docs/tools/gen_index.py`. To change it, edit the 
 | R-FSM-01 | Track the state of the Run, of each Phase, and of each Attempt separately. | §6 | M0 | MUST | T-01 |
 | R-FSM-02 | Reject every transition that the Run, Phase, and Attempt tables do not list. | §6 | M0 | MUST | T-01 |
 | R-FSM-03 | Let only the Workflow Engine perform state transitions and artifact acceptance (invariant 9). | §6 | M0 | MUST | — |
-| R-FSM-04 | Do not start implementation before an accepted plan exists (invariant 1). | §6 | M1 | MUST | — |
-| R-FSM-05 | Complete a Run only after every Phase is accepted and final verification succeeds (invariant 7). | §6 | M1 | MUST | — |
-| R-FSM-06 | Stop when a retry, replan, time, or other permitted limit is exceeded (invariant 8). | §6 | M1 | MUST | T-01, T-15 |
+| R-FSM-04 | Do not start implementation before an accepted plan exists (invariant 1). | §6 | M1b | MUST | — |
+| R-FSM-05 | Complete a Run only after every Phase is accepted and final verification succeeds (invariant 7). | §6 | M1b | MUST | — |
+| R-FSM-06 | Stop when a retry, replan, time, or other permitted limit is exceeded (invariant 8). | §6 | M1a | MUST | T-01, T-15 |
 | R-FSM-07 | Record the state to resume when a Run is suspended, and keep no agent process running while it is suspended. | §6 | M2 | MUST | T-02, T-07 |
 | R-FSM-08 | Offer approve, request changes, and reject for plan approval; a change request does not consume the replan counter. | §6 | M2 | MUST | T-02 |
 | R-FSM-09 | Return to planning after a final verification or final evaluation failure, with repair Phases in a new Plan Revision. | §6 | M3 | MUST | T-02 |
@@ -1457,7 +1459,8 @@ This appendix is generated by `docs/tools/gen_index.py`. To change it, edit the 
 | R-FSM-15 | Accept a policy amendment only from the user through the CLI and only for execution limits, and record it as a `PolicyAmended` event without rewriting the frozen files. | §6.3 | M3 | MUST | T-02 |
 | R-FSM-16 | Do not equate an uncertain external outcome with failure, and do not repeat the work before reconciliation is complete (invariant 11). | §6 | M3 | MUST | T-12 |
 | R-FSM-17 | Start a Phase only after all its dependencies are accepted and integrated (invariants 2 and 15). | §6 | M4 | MUST | T-01, T-18 |
-| R-FSM-18 | Prohibit concurrent Attempts for the same Phase or session, and manage slots and state changes in a single control loop (invariant 14). | §6 | M1 | MUST | T-18 |
+| R-FSM-18 | Prohibit concurrent Attempts for the same Phase or session, and manage slots and state changes in a single control loop (invariant 14). | §6 | M1b | MUST | T-18 |
+| R-FSM-19 | Require the user's approval of a valid plan by default, and let `execution.requirePlanApproval` turn it off. | §14 | M2 | MUST | — |
 
 ### Human in the loop
 
@@ -1468,7 +1471,7 @@ This appendix is generated by `docs/tools/gen_index.py`. To change it, edit the 
 | R-HITL-03 | When a question is accepted, stop new dispatches across the Run, let running Attempts finish, and commit `WaitingForUser` only after every execution process is reaped. | §6.1 | M2 | MUST | T-07, T-20 |
 | R-HITL-04 | In non-interactive mode, persist the questions, reap all processes, and exit with a dedicated exit code so that answers and resumption can follow later. | §6.1 | M2 | MUST | T-07 |
 | R-HITL-05 | Do not charge waiting for input to failure, retry, or replan counts, and measure waiting time separately from active time. | §6.1 | M2 | MUST | T-15 |
-| R-HITL-06 | Resume the originating session as the next Turn of the same Attempt; if the session cannot be restored, mark the Attempt `Abandoned` and continue in a new Attempt with the handoff context. | §6.1 | M2 | MUST | T-07, T-16 |
+| R-HITL-06 | Resume the originating session as the next Turn of the same Attempt; if the session cannot be restored, mark the Attempt `Abandoned` and continue in a new Attempt with the handoff context, or stop as `Blocked` when a handoff input is missing. | §6.1 | M2 | MUST | T-07, T-16 |
 | R-HITL-07 | Have the Planner interpret answers into the plan; never pass an answer to the Implementer in a way that bypasses plan validation. | §6.1 | M2 | MUST | — |
 | R-HITL-08 | Do not start work that depends on an unanswered mandatory question, never fill in answers automatically, and never treat a recommendation as an answer (invariant 10). | §6, §6.1 | M2 | MUST | T-07 |
 | R-HITL-09 | Append Other to every choice question at presentation time, reject an agent option with the reserved ID `other`, and store free text verbatim. | §8 | M2 | MUST | T-07 |
@@ -1494,12 +1497,12 @@ This appendix is generated by `docs/tools/gen_index.py`. To change it, edit the 
 | ID | Requirement | Section | Milestone | Strength | Tests |
 | --- | --- | --- | --- | --- | --- |
 | R-ART-01 | Validate artifacts with typed structures, and reject unknown fields, trailing values, missing required fields, invalid nulls and values, and duplicate keys. | §8 | M0 | MUST | T-03 |
-| R-ART-02 | Keep engine-assigned identifiers out of agent output; write an Attempt binding with the launch intent, and accept an output only when its binding matches the current Plan Revision and Attempt (invariant 4). | §8 | M1 | MUST | T-03 |
+| R-ART-02 | Keep engine-assigned identifiers out of agent output; write an Attempt binding with the launch intent, and accept an output only when its binding matches the current Plan Revision and Attempt (invariant 4). | §8 | M1b | MUST | T-03 |
 | R-ART-03 | Validate plans for unique IDs, existing references, acyclic dependencies, acceptance criteria, permitted effort values, verification references, and repository-relative scopes. | §8 | M2 | MUST | T-01 |
 | R-ART-04 | Require every acceptance criterion to name its verification means in `verifiedBy`, and reject a criterion that has none or names an unavailable one. | §8 | M2 | MUST | T-09 |
 | R-ART-05 | Require every step file to lie within the change scope, and let only the engine assign the Plan Revision number. | §8 | M2 | MUST | — |
-| R-ART-06 | Match change scopes with the Bellona pattern grammar, and reject absolute paths, `..` segments, and negation. | §8 | M1 | MUST | T-06 |
-| R-ART-07 | Treat `implemented` as a report only, and compare the reported changed files with the actual diff. | §8 | M1 | MUST | T-03 |
+| R-ART-06 | Match change scopes with the Bellona pattern grammar, and reject absolute paths, `..` segments, and negation. | §8 | M1b | MUST | T-06 |
+| R-ART-07 | Treat `implemented` as a report only, and compare the reported changed files with the actual diff. | §8 | M1b | MUST | T-03 |
 | R-ART-08 | Reject an evaluation that omits an acceptance criterion or whose verdict disagrees with its criteria and findings. | §8 | M3 | MUST | T-09 |
 | R-ART-09 | Bind each review to the Implementer Attempt, the candidate commit, and the tree, so that it cannot be reused for another version. | §8 | M3 | MUST | T-03 |
 | R-ART-10 | Treat a Coordinator decision as a proposal, and execute it only after validating state, target Phase, permissions, budget, and capabilities. | §8 | M2 | MUST | — |
@@ -1508,13 +1511,13 @@ This appendix is generated by `docs/tools/gen_index.py`. To change it, edit the 
 
 | ID | Requirement | Section | Milestone | Strength | Tests |
 | --- | --- | --- | --- | --- | --- |
-| R-VER-01 | Verify independently of the agent's report, and never grant acceptance when a mandatory check failed, did not run, or is stale (invariant 5). | §9 | M1 | MUST | — |
-| R-VER-02 | Run only named checks that are resolved from trusted definitions; never execute a shell string that an LLM generated. | §9 | M1 | MUST | — |
-| R-VER-03 | Record in the evidence the command identifier, exit code, timeout, log references, and target identifiers. | §9 | M1 | MUST | — |
-| R-VER-04 | Run the required checks on the base commit at Run start, and block the Run before any agent launch when this baseline fails. | §9 | M1 | MUST | T-06 |
+| R-VER-01 | Verify independently of the agent's report, and never grant acceptance when a mandatory check failed, did not run, or is stale (invariant 5). | §9 | M1b | MUST | — |
+| R-VER-02 | Run only named checks that are resolved from trusted definitions; never execute a shell string that an LLM generated. | §9 | M1b | MUST | — |
+| R-VER-03 | Record in the evidence the command identifier, exit code, timeout, log references, and target identifiers. | §9 | M1b | MUST | — |
+| R-VER-04 | Run the required checks on the base commit at Run start, and block the Run before any agent launch when this baseline fails. | §9 | M1b | MUST | T-06 |
 | R-VER-05 | Record the files that the checks create in the baseline run, and treat them as ignored for the rest of the Run. | §9 | M2 | MUST | T-10 |
 | R-VER-06 | Give the Implementer the commands of its Phase's checks; do not use its own runs as evidence, and do not treat a refused self-check as a failure. | §9 | M2 | MUST | T-10 |
-| R-VER-07 | Treat a change to, or the deletion of, an existing protected file as a scope violation unless a step of the Phase names the file with that action. | §9 | M3 | MUST | T-09 |
+| R-VER-07 | Treat a change to, or the deletion of, an existing protected file as a scope violation unless a step of the Phase names the file with that action. | §9 | M1b | MUST | T-09 |
 | R-VER-08 | When review is mandatory, require an accepted verdict from an independent Evaluator before acceptance (invariant 6). | §6 | M3 | MUST | — |
 | R-VER-09 | Set the evaluation frequency with `independentReview` (`none`, `final`, `phase`), and keep mechanical and final verification under `none`. | §10 | M3 | MUST | — |
 
@@ -1524,10 +1527,10 @@ This appendix is generated by `docs/tools/gen_index.py`. To change it, edit the 
 | --- | --- | --- | --- | --- | --- |
 | R-SCH-01 | Implement Standard and Phased as presets of the one workflow, and enforce the single Phase of Standard for the first Plan Revision only. | §10 | M2 | MUST | T-09 |
 | R-SCH-02 | Implement Strict as Phased with `phase` as a review minimum that configuration cannot lower. | §10 | M3 | MUST | — |
-| R-SCH-03 | Bound the concurrently running agent processes of every role by `maxConcurrency`, and launch at least two agents concurrently when it allows. | §10 | M1 | MUST | T-18 |
+| R-SCH-03 | Bound the concurrently running agent processes of every role by `maxConcurrency`, and launch at least two agents concurrently when it allows. | §10 | M1b | MUST | T-18 |
 | R-SCH-04 | With `maxConcurrency` of one, keep at most one Phase in flight. | §10 | M4 | MUST | T-18 |
 | R-SCH-05 | Derive the Ready set from the accepted plan, break ties by plan order and Phase ID, and dispatch a Phase as soon as its dependencies are accepted. | §10 | M4 | MUST | T-18 |
-| R-SCH-06 | Reserve a slot when the launch intent is persisted and release it after the process is reaped; a worker that holds a slot never waits for another. | §10 | M1 | MUST | T-18 |
+| R-SCH-06 | Reserve a slot when the launch intent is persisted and release it after the process is reaped; a worker that holds a slot never waits for another. | §10 | M1b | MUST | T-18 |
 | R-SCH-07 | Have workers return results through channels only, and let a single control loop validate results and commit events. | §10 | M0 | MUST | T-20 |
 | R-SCH-08 | Keep the successes of independent Phases when one Phase fails, do not start its dependents, and do not repeat preserved work while its assumptions hold. | §10 | M4 | MUST | T-20 |
 | R-SCH-09 | Stop new dispatches on Run-wide events: replanning, an uncertain outcome, budget exhaustion, a rate-limit rejection, or a question to the user. | §10 | M4 | MUST | T-20 |
@@ -1549,53 +1552,53 @@ This appendix is generated by `docs/tools/gen_index.py`. To change it, edit the 
 
 | ID | Requirement | Section | Milestone | Strength | Tests |
 | --- | --- | --- | --- | --- | --- |
-| R-INT-01 | Freeze the base commit at Run start, use a dedicated integration ref and workspace, and never apply changes to the user's branch or working tree automatically. | §10.2 | M1 | MUST | T-06, T-19 |
-| R-INT-02 | Create a dedicated worktree for each Phase from the current accepted integration commit, and never let two Implementers write to one worktree. | §10.2 | M1 | MUST | T-19 |
-| R-INT-03 | Determine the change set, check it against the change scope before staging, and snapshot it as a candidate commit before any check runs. | §10.2 | M1 | MUST | T-06 |
-| R-INT-04 | Create internal commits only on Bellona-managed refs, without running repository hooks and without requiring signing. | §10.2 | M1 | MUST | — |
+| R-INT-01 | Freeze the base commit at Run start, use a dedicated integration ref and workspace, and never apply changes to the user's branch or working tree automatically. | §10.2 | M1b | MUST | T-06, T-19 |
+| R-INT-02 | Create a dedicated worktree for each Phase from the current accepted integration commit, and never let two Implementers write to one worktree. | §10.2 | M1b | MUST | T-19 |
+| R-INT-03 | Determine the change set, check it against the change scope before staging, and snapshot it as a candidate commit before any check runs. | §10.2 | M1b | MUST | T-06 |
+| R-INT-04 | Create internal commits only on Bellona-managed refs, without running repository hooks and without requiring signing. | §10.2 | M1b | MUST | — |
 | R-INT-05 | Reset the Phase worktree to the candidate commit before a repair Attempt continues in it. | §10.2 | M3 | MUST | — |
-| R-INT-06 | Integrate a candidate by fast-forward when the integration ref still points at its base commit. | §10.2 | M1 | MUST | T-18 |
+| R-INT-06 | Integrate a candidate by fast-forward when the integration ref still points at its base commit. | §10.2 | M1b | MUST | T-18 |
 | R-INT-07 | Integrate one candidate at a time, and use a merge commit when the ref has moved; never resolve conflicts automatically. | §10.2 | M4 | MUST | T-19 |
 | R-INT-08 | Run the mandatory checks on the integration candidate, reuse candidate evidence only for an identical tree, and do not advance the ref when verification fails. | §10.2 | M4 | MUST | T-19 |
-| R-INT-09 | Record the integration intent, update the ref by comparison with the expected old commit, persist the observed result, and commit `PhaseAccepted` only afterwards. | §10.2 | M1 | MUST | T-20 |
-| R-INT-10 | Move the integration ref only forward within a Run (invariant 15). | §10.2 | M1 | MUST | T-19 |
+| R-INT-09 | Record the integration intent, update the ref by comparison with the expected old commit, persist the observed result, and commit `PhaseAccepted` only afterwards. | §10.2 | M1b | MUST | T-20 |
+| R-INT-10 | Move the integration ref only forward within a Run (invariant 15). | §10.2 | M1b | MUST | T-19 |
 | R-INT-11 | After a conflict or a post-integration failure, start the repair Attempt in a new worktree at the current integration commit, with the preserved candidate as a reference. | §10.2 | M4 | MUST | — |
-| R-INT-12 | When a Run is `Completed`, report the final integration commit and the Bellona-managed ref that points at it. | §10.2 | M1 | MUST | — |
+| R-INT-12 | When a Run is `Completed`, report the final integration commit and the Bellona-managed ref that points at it. | §10.2 | M1b | MUST | — |
 
 ### Agent runtime
 
 | ID | Requirement | Section | Milestone | Strength | Tests |
 | --- | --- | --- | --- | --- | --- |
-| R-RUN-01 | Keep host-specific argument names and event formats out of the core. | §11 | M1 | MUST | — |
-| R-RUN-02 | Take the agent's final message as its output; agents write no artifact files, and only the engine writes stored artifacts. | §11 | M1 | MUST | — |
-| R-RUN-03 | Derive the outcome of an execution from the host's result, never from the exit code alone (invariant 3). | §11 | M1 | MUST | — |
-| R-RUN-04 | Treat every capability beyond the basic result as optional, and fail configuration validation at Run start when a role setting requires an absent capability. | §11 | M1 | MUST | — |
-| R-RUN-05 | Store the launch receipt with the Attempt, and fail the Attempt when the receipt contradicts a value that the adapter set. | §11 | M1 | MUST | T-08 |
-| R-RUN-06 | Record refused calls, and use them to classify a failure only when the Attempt produced no acceptable output. | §11 | M1 | MUST | T-08 |
-| R-RUN-07 | Build the environment of the agent process explicitly, and record variable names but never values. | §11 | M1 | MUST | T-08 |
+| R-RUN-01 | Keep host-specific argument names and event formats out of the core. | §11 | M1a | MUST | — |
+| R-RUN-02 | Take the agent's final message as its output; agents write no artifact files, and only the engine writes stored artifacts. | §11 | M1a | MUST | — |
+| R-RUN-03 | Derive the outcome of an execution from the host's result, never from the exit code alone (invariant 3). | §11 | M1a | MUST | — |
+| R-RUN-04 | Treat every capability beyond the basic result as optional, and fail configuration validation at Run start when a role setting requires an absent capability. | §11 | M1a | MUST | — |
+| R-RUN-05 | Store the launch receipt with the Attempt, and fail the Attempt when the receipt contradicts a value that the adapter set. | §11 | M1a | MUST | T-08 |
+| R-RUN-06 | Record refused calls, and use them to classify a failure only when the Attempt produced no acceptable output. | §11 | M1a | MUST | T-08 |
+| R-RUN-07 | Build the environment of the agent process explicitly, and record variable names but never values. | §11 | M1a | MUST | T-08 |
 | R-RUN-08 | Keep the role definition identical across the Attempts of a role, and put variable content in the user message. | §11 | M2 | SHOULD | — |
-| R-RUN-09 | Reject `args` that contain an adapter-owned argument, and pass the prompt separately from `args`. | §14 | M1 | MUST | T-08 |
-| R-RUN-10 | Assign the session ID before launch where the host supports it, and record it with the launch intent. | §12.1 | M1 | MUST | T-08 |
+| R-RUN-09 | Reject `args` that contain an adapter-owned argument, and pass the prompt separately from `args`. | §14 | M1a | MUST | T-08 |
+| R-RUN-10 | Assign the session ID before launch where the host supports it, and record it with the launch intent. | §12.1 | M1a | MUST | T-08 |
 | R-RUN-11 | Resume only by explicit session ID, and pass the instructions of a resumed Turn in the user message. | §11.1 | M2 | MUST | — |
-| R-RUN-12 | Bind a session to one role and one worktree, never run two Attempts in one session at once, and never let an Evaluator reuse an Implementer session. | §5 | M1 | MUST | T-18 |
+| R-RUN-12 | Bind a session to one role and one worktree, never run two Attempts in one session at once, and never let an Evaluator reuse an Implementer session. | §5 | M1b | MUST | T-18 |
 | R-RUN-13 | Start every Evaluator Attempt in a new session. | §11.1 | M3 | MUST | — |
 | R-RUN-14 | Resume the Planner session for later Planner Attempts, after updating its worktree to the current integration commit and taking the comparison baseline. | §5 | M2 | MUST | T-10 |
-| R-RUN-15 | Disallow native subagent delegation for the Implementer and the Coordinator as a role contract, and record subagent use where the host reports it. | §11.1 | M1 | MUST | T-10 |
+| R-RUN-15 | Disallow native subagent delegation for the Implementer and the Coordinator as a role contract, and record subagent use where the host reports it. | §11.1 | M1a | MUST | T-10 |
 | R-RUN-16 | If read-only subagents are enabled for the Planner or the Evaluator, treat them as part of the Attempt, and reject the setting for the Implementer and the Coordinator. | §11.1 | Post-MVP | MUST | T-10 |
-| R-RUN-17 | Launch each role as an independent CLI process, with a new process for every Turn in the MVP. | §11.1 | M1 | MUST | — |
+| R-RUN-17 | Launch each role as an independent CLI process, with a new process for every Turn in the MVP. | §11.1 | M1a | MUST | — |
 | R-RUN-18 | Probe the capabilities of each target host and answer its open questions before the AgentRuntime contract is frozen. | §18 | M0 | MUST | — |
 | R-RUN-19 | Run the same workflow with a second host adapter, and report host-specific limitations. | §18 | M5 | MUST | — |
-| R-RUN-20 | Record cache usage for every Attempt. | §11 | M1 | MUST | — |
+| R-RUN-20 | Record cache usage for every Attempt. | §11 | M1a | MUST | — |
 
 ### Process supervision
 
 | ID | Requirement | Section | Milestone | Strength | Tests |
 | --- | --- | --- | --- | --- | --- |
-| R-PROC-01 | Launch agents in dedicated process groups, reap them with `Wait`, and consume stdout and stderr concurrently. | §11.2 | M1 | MUST | T-15 |
-| R-PROC-02 | Enforce the startup, Turn, Phase, and Run timeouts and the cancellation grace period. | §11.2 | M1 | MUST | T-05, T-15 |
-| R-PROC-03 | Measure active time as wall-clock time with at least one supervised process running, without adding parallel processes together. | §11.2 | M1 | MUST | — |
-| R-PROC-04 | Cancel in stages: a graceful interrupt, termination of the process group, and forced termination after the grace period; apply the same stages when a Turn times out. | §11.2 | M1 | MUST | T-08, T-15 |
-| R-PROC-05 | End a cancelled or timed-out Attempt as `Cancelled` or `TimedOut`, and do not accept output produced during the graceful interrupt. | §11.2 | M1 | MUST | T-08 |
+| R-PROC-01 | Launch agents in dedicated process groups, reap them with `Wait`, and consume stdout and stderr concurrently. | §11.2 | M1a | MUST | T-15 |
+| R-PROC-02 | Enforce the startup, Turn, Phase, and Run timeouts and the cancellation grace period. | §11.2 | M1a | MUST | T-05, T-15 |
+| R-PROC-03 | Measure active time as wall-clock time with at least one supervised process running, without adding parallel processes together. | §11.2 | M1a | MUST | — |
+| R-PROC-04 | Cancel in stages: a graceful interrupt, termination of the process group, and forced termination after the grace period; apply the same stages when a Turn times out. | §11.2 | M1a | MUST | T-08, T-15 |
+| R-PROC-05 | End a cancelled or timed-out Attempt as `Cancelled` or `TimedOut`, and do not accept output produced during the graceful interrupt. | §11.2 | M1a | MUST | T-08 |
 | R-PROC-06 | Never identify a surviving process by PID alone, and do not terminate a process whose identity is uncertain. | §11.2 | M3 | MUST | — |
 | R-PROC-07 | Detect idle agents from gaps in events, without treating silence during inference as a failure. | §11.2 | Post-MVP | MUST | T-15 |
 
@@ -1610,27 +1613,28 @@ This appendix is generated by `docs/tools/gen_index.py`. To change it, edit the 
 | R-PER-05 | On resume, validate sequence numbers, formats, and artifact references; recover an incomplete trailing record, and never ignore corruption in the middle of the journal. | §12 | M0 | MUST | T-04, T-13 |
 | R-PER-06 | Keep replay free of side effects: the Reducer derives state only from committed event values (invariant 13). | §12.1 | M0 | MUST | T-13 |
 | R-PER-07 | Put only small data and artifact references (path, size, SHA-256) in events; keep finalized artifacts immutable, and stop when one is lost or does not match. | §12.2 | M0 | MUST | T-13 |
-| R-PER-08 | Configure size limits for artifacts, events, output records, questions, and answers, and never truncate required input silently. | §12.2 | M1 | MUST | T-16 |
-| R-PER-09 | Give each Attempt its own directory with its binding and per-Turn outputs; agents never write into the Run directory. | §12 | M1 | MUST | — |
+| R-PER-08 | Configure size limits for artifacts, events, output records, questions, and answers, and never truncate required input silently. | §12.2 | M1a | MUST | T-16 |
+| R-PER-09 | Give each Attempt its own directory with its binding and per-Turn outputs; agents never write into the Run directory. | §12 | M1a | MUST | — |
+| R-PER-10 | Do not delete plans, events, or logs automatically; remove them only on an explicit user command. | §12 | M0 | MUST | — |
 
 ### Recovery and reconciliation
 
 | ID | Requirement | Section | Milestone | Strength | Tests |
 | --- | --- | --- | --- | --- | --- |
-| R-REC-01 | Persist the launch intent before launch, record the confirmed launch afterwards, and record observed completion as a separate event. | §12 | M1 | MUST | T-12 |
+| R-REC-01 | Persist the launch intent before launch, record the confirmed launch afterwards, and record observed completion as a separate event. | §12 | M1a | MUST | T-12 |
 | R-REC-02 | On recovery, acquire the Run lock, replay events, and then reconcile external state as the reconciliation table prescribes. | §12.1 | M3 | MUST | T-12 |
 | R-REC-03 | Mark an Attempt whose outcome cannot be determined `Unknown`, enter `RecoveryRequired`, and neither rerun nor discard it automatically. | §12.1 | M3 | MUST | T-12 |
 | R-REC-04 | Do not rerun an accepted Phase while its evidence is valid; when the evidence is stale or corrupt, rerun the checks on the recorded commit. | §12.1 | M3 | MUST | — |
-| R-REC-05 | Create a new Attempt for every retry, and never overwrite an earlier Attempt. | §12.1 | M1 | MUST | — |
+| R-REC-05 | Create a new Attempt for every retry, and never overwrite an earlier Attempt. | §12.1 | M1a | MUST | — |
 
 ### Context
 
 | ID | Requirement | Section | Milestone | Strength | Tests |
 | --- | --- | --- | --- | --- | --- |
-| R-CTX-01 | Store the workflow context in Bellona and leave the conversation context to the host; implement no conversation store or compaction. | §12.3 | M1 | MUST | — |
-| R-CTX-02 | Give each role the context that the role table requires, as a fixed input contract. | §12.3 | M1 | MUST | — |
+| R-CTX-01 | Store the workflow context in Bellona and leave the conversation context to the host; implement no conversation store or compaction. | §12.3 | M1a | MUST | — |
+| R-CTX-02 | Give each role the context that the role table requires, as a fixed input contract. | §12.3 | M1b | MUST | — |
 | R-CTX-03 | Do not share the Implementer's conversation with the Evaluator. | §12.3 | M3 | MUST | T-16 |
-| R-CTX-04 | When a session is lost or the host cannot resume, continue in a new session from persisted artifacts and workspace state. | §12.3 | M2 | MUST | T-16 |
+| R-CTX-04 | When a session is lost or the host cannot resume, continue in a new session from persisted artifacts and workspace state, and stop as `Blocked` only when a handoff input is missing. | §12.3 | M2 | MUST | T-16 |
 
 ### Run manifest
 
@@ -1638,30 +1642,31 @@ This appendix is generated by `docs/tools/gen_index.py`. To change it, edit the 
 | --- | --- | --- | --- | --- | --- |
 | R-MAN-01 | Freeze the effective configuration, the role definitions, and the workflow version at Run start by copying their contents (invariant 12). | §12.4 | M0 | MUST | T-14 |
 | R-MAN-02 | Refuse to resume when the engine or the event contracts are incompatible, unless an explicit migration applies. | §12.4 | M0 | MUST | T-14 |
-| R-MAN-03 | Record Runtime updates and changes in model availability, and apply no configuration change to an existing Run except a journaled policy amendment. | §12.4 | M1 | MUST | T-14 |
-| R-MAN-04 | Keep the intended host customization scope and the launch receipt with the Run. | §12.4 | M1 | MUST | T-08 |
+| R-MAN-03 | Record Runtime updates and changes in model availability, and apply no configuration change to an existing Run except a journaled policy amendment. | §12.4 | M1a | MUST | T-14 |
+| R-MAN-04 | Keep the intended host customization scope and the launch receipt with the Run. | §12.4 | M1a | MUST | T-08 |
 
 ### Workspace
 
 | ID | Requirement | Section | Milestone | Strength | Tests |
 | --- | --- | --- | --- | --- | --- |
-| R-WS-01 | Record the repository state at Run start, reject a dirty working tree by default, and never overwrite uncommitted changes. | §13 | M1 | MUST | T-06 |
-| R-WS-02 | Create worktrees under `workspace.root`, never inside the user's working tree, and run every role in a Bellona-managed worktree. | §13 | M1 | MUST | T-06 |
-| R-WS-03 | Run the `workspace.setup` commands in every new worktree before use, and classify a setup failure as `MissingEnvironment`. | §13 | M1 | MUST | T-06 |
+| R-WS-01 | Record the repository state at Run start, reject a dirty working tree by default, and never overwrite uncommitted changes. | §13 | M1b | MUST | T-06 |
+| R-WS-02 | Create worktrees under `workspace.root`, never inside the user's working tree, and run every role in a Bellona-managed worktree. | §13 | M1b | MUST | T-06 |
+| R-WS-03 | Run the `workspace.setup` commands in every new worktree before use, and classify a setup failure as `MissingEnvironment`. | §13 | M1b | MUST | T-06 |
 | R-WS-04 | Compare the tracked files of the worktree before and after each execution of a read-only role, and do not accept the output when they changed. | §4 | M2 | MUST | T-06 |
-| R-WS-05 | Do not save credentials or API keys in artifacts or logs. | §13 | M1 | MUST | — |
+| R-WS-05 | Do not save credentials or API keys in artifacts or logs. | §13 | M1a | MUST | — |
 | R-WS-06 | Validate the paths, symbolic links, and sizes of artifacts that the engine loads. | §13 | M0 | MUST | T-06 |
-| R-WS-07 | Do not delete worktrees unconditionally at the end of a Run; check for unpreserved changes first. | §13 | M1 | MUST | T-06 |
-| R-WS-08 | Never edit harness configuration files or add sandbox arguments, and add no permission arguments unless scope enforcement is enabled. | §13 | M1 | MUST | — |
-| R-WS-09 | Use Git worktrees as the only workspace separation. | §13 | M1 | MUST | — |
+| R-WS-07 | Do not delete worktrees unconditionally at the end of a Run; check for unpreserved changes first. | §13 | M1b | MUST | T-06 |
+| R-WS-08 | Never edit harness configuration files or add sandbox arguments, and add no permission arguments unless scope enforcement is enabled. | §13 | M1a | MUST | — |
+| R-WS-09 | Use Git worktrees as the only workspace separation. | §13 | M1b | MUST | — |
+| R-WS-10 | Leave the host's per-directory session data in place when a worktree is removed, unless the user asks for its removal. | §13 | M1b | MUST | — |
 
 ### Configuration
 
 | ID | Requirement | Section | Milestone | Strength | Tests |
 | --- | --- | --- | --- | --- | --- |
 | R-CFG-01 | Keep models, limits, and restrictions in user-managed JSON configuration, and never let an LLM or a lower-priority setting weaken restrictions or budget ceilings. | §14 | M0 | MUST | — |
-| R-CFG-02 | Define commands as named argument arrays, and resolve plan references, required checks, and workspace setup by name. | §14 | M1 | MUST | — |
-| R-CFG-03 | Apply the host customization scope of each role: `inherit` by default, or `isolated`. | §14 | M1 | MUST | — |
+| R-CFG-02 | Define commands as named argument arrays, and resolve plan references, required checks, and workspace setup by name. | §14 | M1b | MUST | — |
+| R-CFG-03 | Apply the host customization scope of each role: `inherit` by default, and `isolated` by default for the Evaluator where the adapter supports it. | §14 | M1a | MUST | — |
 | R-CFG-04 | If scope enforcement is enabled, generate the role's permission rules from the Phase, own the permission arguments, record a fallback to detection, and keep the inspection after the Turn as the authority. | §14 | Post-MVP | MUST | T-10 |
 
 ### Errors and retries
@@ -1670,30 +1675,32 @@ This appendix is generated by `docs/tools/gen_index.py`. To change it, edit the 
 | --- | --- | --- | --- | --- | --- |
 | R-ERR-01 | Classify errors as the error table prescribes, and keep separate persisted counters for transport retries, structured-output repairs, implementation repairs, and replanning. | §14.1 | M3 | MUST | T-15 |
 | R-ERR-02 | Retry a transient error only when the outcome of external side effects is certain, with capped backoff and jitter, and without stacking retries on those of the host. | §14.1 | M3 | MUST | — |
-| R-ERR-03 | Treat a rate-limit rejection as a Run-wide event, and stop new dispatches. | §14.1 | M4 | MUST | — |
+| R-ERR-03 | Treat a rate-limit rejection as a Run-wide event: stop new dispatches, suspend the Run as `Blocked` without waiting, and do not charge the rejected Attempt to a retry counter. | §14.1 | M4 | MUST | — |
 | R-ERR-04 | Record the reason, the count, and the next eligible retry time of every retry, so that a restart cannot reset the limits. | §14.1 | M3 | MUST | T-15 |
-| R-ERR-05 | End an Attempt that reaches a per-Turn cap as `Failed`, without stopping the Run. | §14.1 | M1 | MUST | T-08 |
-| R-ERR-06 | Preserve the worktree state on a scope violation, and do not snapshot or integrate it. | §14.1 | M1 | MUST | T-06 |
+| R-ERR-05 | End an Attempt that reaches a per-Turn cap as `Failed`, without stopping the Run. | §14.1 | M1a | MUST | T-08 |
+| R-ERR-06 | Preserve the worktree state on a scope violation, and do not snapshot or integrate it. | §14.1 | M1b | MUST | T-06 |
+| R-ERR-07 | Do not classify an unknown error as transient: treat it as `UnknownExecutionOutcome` after the launch intent was persisted, and stop as `Blocked` otherwise. | §14.1 | M3 | MUST | — |
 
 ### Budgets
 
 | ID | Requirement | Section | Milestone | Strength | Tests |
 | --- | --- | --- | --- | --- | --- |
-| R-BUD-01 | Manage Attempt counts, replan counts, and the Turn, Phase, and Run time limits. | §14.2 | M1 | MUST | T-01, T-15 |
-| R-BUD-02 | Cap the agent steps and the estimated cost of each Turn where the host supports it, and record the caps as not applied where it does not. | §14.2 | M1 | MUST | T-08 |
-| R-BUD-03 | Persist usage and cost only when the host reports them, never record an unavailable value as zero, and aggregate cumulative cost per session. | §14.2 | M1 | MUST | T-08 |
+| R-BUD-01 | Manage Attempt counts, replan counts, and the Turn, Phase, and Run time limits. | §14.2 | M1a | MUST | T-01, T-15 |
+| R-BUD-02 | Cap the agent steps and the estimated cost of each Turn where the host supports it, and record the caps as not applied where it does not. | §14.2 | M1a | MUST | T-08 |
+| R-BUD-03 | Persist usage and cost only when the host reports them, never record an unavailable value as zero, and aggregate cumulative cost per session. | §14.2 | M1a | MUST | T-08 |
 
 ### CLI and observability
 
 | ID | Requirement | Section | Milestone | Strength | Tests |
 | --- | --- | --- | --- | --- | --- |
-| R-CLI-01 | Provide `run`, `status`, `logs`, `inspect`, `resume`, and `cancel` as a foreground CLI with text output. | §15 | M1 | MUST | — |
+| R-CLI-01 | Provide `run`, `status`, `logs`, `inspect`, `resume`, and `cancel` as a foreground CLI with text output. | §15 | M1b | MUST | — |
 | R-CLI-02 | Provide `questions`, `answer`, and `approve`; show numbered choices with Other, and preserve questions on EOF. | §15 | M2 | MUST | T-07 |
 | R-CLI-03 | Record a policy amendment with `resume --amend` before resuming a `Blocked` Run. | §15 | M3 | MUST | T-02 |
 | R-CLI-04 | Keep the core engine independent of CLI input and output and of persistent execution modes, and require no daemon. | §15.1 | M0 | MUST | — |
-| R-CLI-05 | Distinguish domain events, agent events, process logs, decision records, and evidence, and correlate them by Run, Attempt, and session ID. | §15.1 | M1 | MUST | — |
-| R-CLI-06 | Keep confidential data out of logs where it would only be duplicated. | §15.1 | M1 | SHOULD | — |
+| R-CLI-05 | Distinguish domain events, agent events, process logs, decision records, and evidence, and correlate them by Run, Attempt, and session ID. | §15.1 | M1a | MUST | — |
+| R-CLI-06 | Keep confidential data out of logs where it would only be duplicated. | §15.1 | M1a | SHOULD | — |
 | R-CLI-07 | Add `events` and `usage` commands when they are needed. | §15.1 | Post-MVP | MAY | — |
+| R-CLI-08 | Deliver `cancel` from another process through a cancellation request file that the control loop reads; for a suspended Run, record the cancellation under the Run lock. | §15 | M1b | MUST | — |
 
 ### Technology and evaluation
 
