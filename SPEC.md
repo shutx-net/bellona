@@ -1272,7 +1272,7 @@ Consider third-party libraries individually only when actual requirements arise 
 | M6 — Advanced scheduling | Session reuse optimization, dynamic concurrency, advanced resource locks | Improve execution efficiency based on measurements while preserving mandatory gates. |
 | M7 — Adaptation & extensibility | Direct strategy, strategy selection by the Coordinator, declarative definitions and MCP if needed | Switch configurations while preserving mandatory constraints. |
 
-The first practical MVP covers M0–M4. It is not complete until M4 delivers parallel DAG execution and integration. Run manifests, persisted Attempt launch intent, persistence ordering, error classification and retry limits, process termination, and reconciliation are mandatory MVP requirements. Complete manifests, events/reducer, and locking in M0; process management and fixed input contracts in M1; questions, answers, and revision checks in M2; and post-crash reconciliation and error-specific recovery in M3. The initial implementation may use only one harness, but design the adapter interface to be vendor-independent. Begin evaluation infrastructure, worktree lifecycle management, and logical state-gate testing in the first milestone.
+Appendix A assigns each requirement to one of these milestones. The first practical MVP covers M0–M4. It is not complete until M4 delivers parallel DAG execution and integration. Run manifests, persisted Attempt launch intent, persistence ordering, error classification and retry limits, process termination, and reconciliation are mandatory MVP requirements. Complete manifests, events/reducer, and locking in M0; process management and fixed input contracts in M1; questions, answers, and revision checks in M2; and post-crash reconciliation and error-specific recovery in M3. The initial implementation may use only one harness, but design the adapter interface to be vendor-independent. Begin evaluation infrastructure, worktree lifecycle management, and logical state-gate testing in the first milestone.
 
 Resuming the Planner session and passing check commands to the Implementer are default behaviour and belong to M2. Host scope enforcement and read-only subagents are optional, off by default, and not required for the MVP; schedule them after M4.
 
@@ -1280,26 +1280,28 @@ Resuming the Planner session and passing check commands to the Implementer are d
 
 ### Deterministic tests
 
-- State-transition tables for Run, Phase, and Attempt; rejection of unlisted transitions; dependency cycles, incomplete dependencies, and budget ceilings.
-- Suspension and replanning: resuming a `Blocked` Run with and without a policy amendment, plan approval with requested changes, repair replanning after a final verification failure, and acceptance carry-over and `Superseded` Phases across Plan Revisions.
-- Invalid JSON, unknown statuses, incorrect target IDs, stale artifacts, and discrepancies between reported and actual diffs.
-- Event replay, partial writes, snapshot corruption, duplicate launches, and abnormal termination.
-- Success, failure, timeout, cancellation, and replanning using a fake runtime.
-- Worktree creation and deletion, workspace setup, a failing baseline blocking the Run before any agent launch, preservation of uncommitted changes, detection of unexpected diffs, scope violations, changes made by read-only roles, rejection of path traversal, invalid artifacts, and corrupt events. OS-level isolation testing is outside the MVP scope.
-- HITL: Single and multiple selection, automatic addition of Other and preservation of free text, rejection of empty input, unknown IDs, duplicate answers, and invalidated questions; partial answers, EOF, suspension and resumption, follow-up questions, resume-target checks, prohibition of implementation before required answers, and agent termination while awaiting input.
-- Runtime contract: rejection of adapter-owned arguments in `args`, a prompt that is not absorbed by multi-value options, a session ID assigned before launch and recorded with the launch intent, a launch receipt stored per Attempt, an Attempt failing when the receipt reports a different working directory or session ID, refused calls recorded without failing an Attempt that succeeded, a per-Turn cap ending the Attempt as `Failed` without stopping the Run, cost aggregated per session from cumulative values, an explicitly built child environment, staged cancellation, and output from a cancelled Attempt not being accepted.
-- Verification integrity: rejection of an evaluation that omits a criterion or whose verdict contradicts its criteria, rejection of a criterion without a verification means at plan validation, changes to protected paths without a matching step treated as scope violations, rejection of a first-revision Standard plan with more than one Phase, and acceptance of repair Phases in later revisions of a Standard plan.
-- Host capabilities: Planner Attempts resuming one session, with the worktree updated first and the role-contract baseline taken after the update; check commands present in the Implementer's input; baseline byproducts excluded from change sets; under `scopeEnforcement: host`, rules generated from the Phase, permission options in `args` rejected, a refusal by a generated rule not classified as `MissingEnvironment`, and a `needs_replan` report following the scope-amendment path; subagent use recorded where the host reports it, and `subagents: readOnly` rejected for the Implementer and the Coordinator.
-- Integration tests using actual CLI adapters (optional execution).
-- Fault injection: Abnormal termination immediately after synchronizing AttemptScheduled, immediately after process launch, immediately after implementation completes, immediately after artifact finalization, and after event synchronization but before snapshot update. Confirm existing diffs are preserved and uncertain external operations are not automatically rerun.
-- Replay: Confirm no side effects such as LLM or Git operations, identical state from identical event sequences, and detection of corruption, missing records, and stale references.
-- Manifest: Detect configuration and role-definition changes, incompatible versions, and Runtime updates. Prevent unauthorized application to older Runs.
-- Retry / timeout: Error-specific limits, separation of waiting and active processing time, counter persistence across resumption, cancellation and child-process reaping, and prevention of erroneous termination during silent execution.
-- Context: Reconstruction from artifacts when a session is unavailable, isolation of Implementer conversation history from Evaluators, and explicit termination when required input exceeds size limits.
-- HITL freshness: Detect cancelled questions, revision mismatches, stale approvals, and worktree changes while awaiting answers.
-- MVP parallelism: Use test processes with synchronization barriers to confirm at least two concurrent executions. Verify sequential behavior with `maxConcurrency=1` (one Phase in flight, every integration a fast-forward), concurrency-limit enforcement, prohibition of premature dependent-phase launch, immediate dispatch after dependency acceptance, rejection of dependency cycles, and prevention of duplicate launches for the same Phase/Session.
-- Parallel integration: Confirm isolated worktrees, different completion orders, serialization of overlapping change scopes and shared resources, change-scope locks held until the earlier Phase is accepted or has ended, non-destructive stopping on Git conflicts, invalidation and regeneration of evidence after integration, reuse of candidate evidence only when the integrated tree is identical, an integration ref that never moves backward, and preservation of user branches.
-- Parallel recovery: Preserve partial successes on individual failures; stop new dispatches and reap processes during HITL, replanning, and cancellation; reject late results from older revisions; reconcile crashes immediately before and after integration ref updates; and detect state-update data races with `go test -race`.
+Each item has an identifier so that Appendix A can refer to it.
+
+- **T-01** State-transition tables for Run, Phase, and Attempt; rejection of unlisted transitions; dependency cycles, incomplete dependencies, and budget ceilings.
+- **T-02** Suspension and replanning: resuming a `Blocked` Run with and without a policy amendment, plan approval with requested changes, repair replanning after a final verification failure, and acceptance carry-over and `Superseded` Phases across Plan Revisions.
+- **T-03** Invalid JSON, unknown statuses, incorrect target IDs, stale artifacts, and discrepancies between reported and actual diffs.
+- **T-04** Event replay, partial writes, snapshot corruption, duplicate launches, and abnormal termination.
+- **T-05** Success, failure, timeout, cancellation, and replanning using a fake runtime.
+- **T-06** Worktree creation and deletion, workspace setup, a failing baseline blocking the Run before any agent launch, preservation of uncommitted changes, detection of unexpected diffs, scope violations, changes made by read-only roles, rejection of path traversal, invalid artifacts, and corrupt events. OS-level isolation testing is outside the MVP scope.
+- **T-07** HITL: Single and multiple selection, automatic addition of Other and preservation of free text, rejection of empty input, unknown IDs, duplicate answers, and invalidated questions; partial answers, EOF, suspension and resumption, follow-up questions, resume-target checks, prohibition of implementation before required answers, and agent termination while awaiting input.
+- **T-08** Runtime contract: rejection of adapter-owned arguments in `args`, a prompt that is not absorbed by multi-value options, a session ID assigned before launch and recorded with the launch intent, a launch receipt stored per Attempt, an Attempt failing when the receipt reports a different working directory or session ID, refused calls recorded without failing an Attempt that succeeded, a per-Turn cap ending the Attempt as `Failed` without stopping the Run, cost aggregated per session from cumulative values, an explicitly built child environment, staged cancellation, and output from a cancelled Attempt not being accepted.
+- **T-09** Verification integrity: rejection of an evaluation that omits a criterion or whose verdict contradicts its criteria, rejection of a criterion without a verification means at plan validation, changes to protected paths without a matching step treated as scope violations, rejection of a first-revision Standard plan with more than one Phase, and acceptance of repair Phases in later revisions of a Standard plan.
+- **T-10** Host capabilities: Planner Attempts resuming one session, with the worktree updated first and the role-contract baseline taken after the update; check commands present in the Implementer's input; baseline byproducts excluded from change sets; under `scopeEnforcement: host`, rules generated from the Phase, permission options in `args` rejected, a refusal by a generated rule not classified as `MissingEnvironment`, and a `needs_replan` report following the scope-amendment path; subagent use recorded where the host reports it, and `subagents: readOnly` rejected for the Implementer and the Coordinator.
+- **T-11** Integration tests using actual CLI adapters (optional execution).
+- **T-12** Fault injection: Abnormal termination immediately after synchronizing AttemptScheduled, immediately after process launch, immediately after implementation completes, immediately after artifact finalization, and after event synchronization but before snapshot update. Confirm existing diffs are preserved and uncertain external operations are not automatically rerun.
+- **T-13** Replay: Confirm no side effects such as LLM or Git operations, identical state from identical event sequences, and detection of corruption, missing records, and stale references.
+- **T-14** Manifest: Detect configuration and role-definition changes, incompatible versions, and Runtime updates. Prevent unauthorized application to older Runs.
+- **T-15** Retry / timeout: Error-specific limits, separation of waiting and active processing time, counter persistence across resumption, cancellation and child-process reaping, and prevention of erroneous termination during silent execution.
+- **T-16** Context: Reconstruction from artifacts when a session is unavailable, isolation of Implementer conversation history from Evaluators, and explicit termination when required input exceeds size limits.
+- **T-17** HITL freshness: Detect cancelled questions, revision mismatches, stale approvals, and worktree changes while awaiting answers.
+- **T-18** MVP parallelism: Use test processes with synchronization barriers to confirm at least two concurrent executions. Verify sequential behavior with `maxConcurrency=1` (one Phase in flight, every integration a fast-forward), concurrency-limit enforcement, prohibition of premature dependent-phase launch, immediate dispatch after dependency acceptance, rejection of dependency cycles, and prevention of duplicate launches for the same Phase/Session.
+- **T-19** Parallel integration: Confirm isolated worktrees, different completion orders, serialization of overlapping change scopes and shared resources, change-scope locks held until the earlier Phase is accepted or has ended, non-destructive stopping on Git conflicts, invalidation and regeneration of evidence after integration, reuse of candidate evidence only when the integrated tree is identical, an integration ref that never moves backward, and preservation of user branches.
+- **T-20** Parallel recovery: Preserve partial successes on individual failures; stop new dispatches and reap processes during HITL, replanning, and cancellation; reject late results from older revisions; reconcile crashes immediately before and after integration ref updates; and detect state-update data races with `go test -race`.
 
 ### Comparative evaluations
 
@@ -1400,3 +1402,302 @@ The following decisions should be finalized when implementation begins. The host
 | P3 — Extensibility | Optional daemon, MCP, external API, and declarative format when multiple workflows are needed. |
 
 P0 hashes are a basic requirement for artifact-reference and recovery integrity. Do not introduce complex CAS or tamper-prevention mechanisms. Limit each item to what can be implemented within a single Go binary; do not introduce SQLite, a custom sandbox, or third-party Go frameworks.
+
+## Appendix A. Requirements index
+
+This index gives each requirement of the body an identifier, the milestone in which it first has to hold, a strength, and the deterministic tests of §19 that name it. It adds no rules (see Conventions). Identifiers are stable: do not renumber them when rows are added or removed.
+
+- **Milestone**: M0 to M7 as defined in §18. M0 to M4 form the MVP and correspond to P0 in §23. `Post-MVP` marks hardening items that §23 lists as P1 and optional features that have no milestone. M6 corresponds to P2, and M7 to P3.
+- **Strength**: MUST, SHOULD, or MAY as defined in Conventions.
+- **Tests**: the items of §19 that name the behaviour. A dash means that no deterministic test in §19 names it yet. T-11, the tests with real CLI adapters, is not counted as coverage.
+- A requirement that begins with "If … enabled" applies only when that optional feature is offered.
+
+### Requirements by milestone
+
+| Milestone | Requirements |
+| --- | --- |
+| M0 | R-FSM-01, R-FSM-02, R-FSM-03, R-ART-01, R-SCH-07, R-RUN-18, R-PER-01, R-PER-02, R-PER-03, R-PER-04, R-PER-05, R-PER-06, R-PER-07, R-MAN-01, R-MAN-02, R-WS-06, R-CFG-01, R-CLI-04, R-TECH-01, R-TECH-02, R-TECH-03 |
+| M1 | R-ROLE-02, R-FSM-04, R-FSM-05, R-FSM-06, R-FSM-18, R-ART-02, R-ART-06, R-ART-07, R-VER-01, R-VER-02, R-VER-03, R-VER-04, R-SCH-03, R-SCH-06, R-INT-01, R-INT-02, R-INT-03, R-INT-04, R-INT-06, R-INT-09, R-INT-10, R-INT-12, R-RUN-01, R-RUN-02, R-RUN-03, R-RUN-04, R-RUN-05, R-RUN-06, R-RUN-07, R-RUN-09, R-RUN-10, R-RUN-12, R-RUN-15, R-RUN-17, R-RUN-20, R-PROC-01, R-PROC-02, R-PROC-03, R-PROC-04, R-PROC-05, R-PER-08, R-PER-09, R-REC-01, R-REC-05, R-CTX-01, R-CTX-02, R-MAN-03, R-MAN-04, R-WS-01, R-WS-02, R-WS-03, R-WS-05, R-WS-07, R-WS-08, R-WS-09, R-CFG-02, R-CFG-03, R-ERR-05, R-ERR-06, R-BUD-01, R-BUD-02, R-BUD-03, R-CLI-01, R-CLI-05, R-CLI-06 |
+| M2 | R-ROLE-01, R-FSM-07, R-FSM-08, R-HITL-01, R-HITL-02, R-HITL-03, R-HITL-04, R-HITL-05, R-HITL-06, R-HITL-07, R-HITL-08, R-HITL-09, R-HITL-10, R-HITL-11, R-HITL-12, R-HITL-13, R-HITL-14, R-HITL-15, R-EFF-01, R-EFF-02, R-EFF-03, R-EFF-04, R-ART-03, R-ART-04, R-ART-05, R-ART-10, R-VER-05, R-VER-06, R-SCH-01, R-RUN-08, R-RUN-11, R-RUN-14, R-CTX-04, R-WS-04, R-CLI-02 |
+| M3 | R-ROLE-03, R-FSM-09, R-FSM-10, R-FSM-11, R-FSM-12, R-FSM-13, R-FSM-14, R-FSM-15, R-FSM-16, R-EFF-05, R-ART-08, R-ART-09, R-VER-07, R-VER-08, R-VER-09, R-SCH-02, R-SCH-10, R-INT-05, R-RUN-13, R-PROC-06, R-REC-02, R-REC-03, R-REC-04, R-CTX-03, R-ERR-01, R-ERR-02, R-ERR-04, R-CLI-03 |
+| M4 | R-FSM-17, R-SCH-04, R-SCH-05, R-SCH-08, R-SCH-09, R-SCH-11, R-RES-01, R-RES-02, R-RES-03, R-RES-04, R-INT-07, R-INT-08, R-INT-11, R-ERR-03, R-TECH-04 |
+| M5 | R-RUN-19 |
+| M6 | R-SCH-12 |
+| M7 | R-SCH-13 |
+| Post-MVP | R-RUN-16, R-PROC-07, R-CFG-04, R-CLI-07 |
+
+### Roles
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-ROLE-01 | Launch the Coordinator only when reasoning is needed; it is not a continuously running parent agent. | §4 | M2 | MUST | — |
+| R-ROLE-02 | Let agents report completion, but grant acceptance only in the engine, after it has verified the required evidence. | §4 | M1 | MUST | — |
+| R-ROLE-03 | Have the Evaluator exercise the software, for example by running it or its tests, and not only read the diff. | §4 | M3 | SHOULD | — |
+
+### State model and gates
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-FSM-01 | Track the state of the Run, of each Phase, and of each Attempt separately. | §6 | M0 | MUST | T-01 |
+| R-FSM-02 | Reject every transition that the Run, Phase, and Attempt tables do not list. | §6 | M0 | MUST | T-01 |
+| R-FSM-03 | Let only the Workflow Engine perform state transitions and artifact acceptance (invariant 9). | §6 | M0 | MUST | — |
+| R-FSM-04 | Do not start implementation before an accepted plan exists (invariant 1). | §6 | M1 | MUST | — |
+| R-FSM-05 | Complete a Run only after every Phase is accepted and final verification succeeds (invariant 7). | §6 | M1 | MUST | — |
+| R-FSM-06 | Stop when a retry, replan, time, or other permitted limit is exceeded (invariant 8). | §6 | M1 | MUST | T-01, T-15 |
+| R-FSM-07 | Record the state to resume when a Run is suspended, and keep no agent process running while it is suspended. | §6 | M2 | MUST | T-02, T-07 |
+| R-FSM-08 | Offer approve, request changes, and reject for plan approval; a change request does not consume the replan counter. | §6 | M2 | MUST | T-02 |
+| R-FSM-09 | Return to planning after a final verification or final evaluation failure, with repair Phases in a new Plan Revision. | §6 | M3 | MUST | T-02 |
+| R-FSM-10 | Keep a Phase at its retry limit waiting in `Recovering`, and block the Run only when no Phase can make progress and replanning is not authorized. | §6 | M3 | MUST | — |
+| R-FSM-11 | On replanning or cancellation, stop new dispatches and terminate and reconcile active Attempts before committing the change (invariant 16). | §6 | M3 | MUST | T-20 |
+| R-FSM-12 | Never rewind the integration ref when replanning; plan the new revision against the current integration commit. | §6 | M3 | MUST | T-19 |
+| R-FSM-13 | Carry acceptance over to a new revision only when the Phase ID, its definition digest, and the digests of its transitive dependencies are unchanged; other accepted Phases become `Superseded`. | §6 | M3 | MUST | T-02 |
+| R-FSM-14 | Treat `Blocked` as resumable, and preserve accepted Phases, their evidence, and the integration ref. | §6.3 | M3 | MUST | T-02 |
+| R-FSM-15 | Accept a policy amendment only from the user through the CLI and only for execution limits, and record it as a `PolicyAmended` event without rewriting the frozen files. | §6.3 | M3 | MUST | T-02 |
+| R-FSM-16 | Do not equate an uncertain external outcome with failure, and do not repeat the work before reconciliation is complete (invariant 11). | §6 | M3 | MUST | T-12 |
+| R-FSM-17 | Start a Phase only after all its dependencies are accepted and integrated (invariants 2 and 15). | §6 | M4 | MUST | T-01, T-18 |
+| R-FSM-18 | Prohibit concurrent Attempts for the same Phase or session, and manage slots and state changes in a single control loop (invariant 14). | §6 | M1 | MUST | T-18 |
+
+### Human in the loop
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-HITL-01 | Accept a question from any role only as the common `needs_user_input` output, and never treat a question request as successful implementation. | §8 | M2 | MUST | — |
+| R-HITL-02 | Assign each request an ID that is unique within the Run, and bind it to the originating role, Attempt, session, plan revision, and resume target. | §8 | M2 | MUST | T-07 |
+| R-HITL-03 | When a question is accepted, stop new dispatches across the Run, let running Attempts finish, and commit `WaitingForUser` only after every execution process is reaped. | §6.1 | M2 | MUST | T-07, T-20 |
+| R-HITL-04 | In non-interactive mode, persist the questions, reap all processes, and exit with a dedicated exit code so that answers and resumption can follow later. | §6.1 | M2 | MUST | T-07 |
+| R-HITL-05 | Do not charge waiting for input to failure, retry, or replan counts, and measure waiting time separately from active time. | §6.1 | M2 | MUST | T-15 |
+| R-HITL-06 | Resume the originating session as the next Turn of the same Attempt; if the session cannot be restored, mark the Attempt `Abandoned` and continue in a new Attempt with the handoff context. | §6.1 | M2 | MUST | T-07, T-16 |
+| R-HITL-07 | Have the Planner interpret answers into the plan; never pass an answer to the Implementer in a way that bypasses plan validation. | §6.1 | M2 | MUST | — |
+| R-HITL-08 | Do not start work that depends on an unanswered mandatory question, never fill in answers automatically, and never treat a recommendation as an answer (invariant 10). | §6, §6.1 | M2 | MUST | T-07 |
+| R-HITL-09 | Append Other to every choice question at presentation time, reject an agent option with the reserved ID `other`, and store free text verbatim. | §8 | M2 | MUST | T-07 |
+| R-HITL-10 | Validate answers against the contract of the question type, and reject input for answered, invalidated, or other-Run questions. | §8 | M2 | MUST | T-07 |
+| R-HITL-11 | Bind an approval to the hash of the plan or artifact, and never reuse it for a modified version. | §6.2 | M2 | MUST | T-17 |
+| R-HITL-12 | On resume, check whether the worktree or the plan assumptions changed; do not rebase a Run automatically, and require reassessment when the change affects execution. | §6.2 | M2 | MUST | T-17 |
+| R-HITL-13 | Record cancellation and invalidation of questions as events, and never overwrite an existing answer with different content. | §6.2 | M2 | MUST | T-07, T-17 |
+| R-HITL-14 | Pass free text to the next agent as user requirements; never execute it as shell arguments or let it change engine constraints. | §8 | M2 | MUST | — |
+| R-HITL-15 | Have the Planner ask the user only when user intent needs clarification, not for matters it can investigate or decide itself. | §6.1 | M2 | MUST | — |
+
+### Effort
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-EFF-01 | Select the model and the effort separately, and do not require the user to specify effort for every Run. | §7 | M2 | MUST | — |
+| R-EFF-02 | Offer the LLM only effort values that the adapter supports and the policy permits. | §7 | M2 | MUST | — |
+| R-EFF-03 | Record the requested value, the value passed to the adapter, and the value confirmed by the host separately, for the effort and for the model; record an unreported value as unknown. | §7 | M2 | MUST | — |
+| R-EFF-04 | When the host cannot set the effort, or cannot change it on resume, do not claim that it was applied; follow an explicit fallback policy. | §7 | M2 | MUST | — |
+| R-EFF-05 | Take the Evaluator's effort from the Planner's proposal in the plan; do not launch the Coordinator to start an Evaluator. | §7 | M3 | MUST | — |
+
+### Artifact contracts
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-ART-01 | Validate artifacts with typed structures, and reject unknown fields, trailing values, missing required fields, invalid nulls and values, and duplicate keys. | §8 | M0 | MUST | T-03 |
+| R-ART-02 | Keep engine-assigned identifiers out of agent output; write an Attempt binding with the launch intent, and accept an output only when its binding matches the current Plan Revision and Attempt (invariant 4). | §8 | M1 | MUST | T-03 |
+| R-ART-03 | Validate plans for unique IDs, existing references, acyclic dependencies, acceptance criteria, permitted effort values, verification references, and repository-relative scopes. | §8 | M2 | MUST | T-01 |
+| R-ART-04 | Require every acceptance criterion to name its verification means in `verifiedBy`, and reject a criterion that has none or names an unavailable one. | §8 | M2 | MUST | T-09 |
+| R-ART-05 | Require every step file to lie within the change scope, and let only the engine assign the Plan Revision number. | §8 | M2 | MUST | — |
+| R-ART-06 | Match change scopes with the Bellona pattern grammar, and reject absolute paths, `..` segments, and negation. | §8 | M1 | MUST | T-06 |
+| R-ART-07 | Treat `implemented` as a report only, and compare the reported changed files with the actual diff. | §8 | M1 | MUST | T-03 |
+| R-ART-08 | Reject an evaluation that omits an acceptance criterion or whose verdict disagrees with its criteria and findings. | §8 | M3 | MUST | T-09 |
+| R-ART-09 | Bind each review to the Implementer Attempt, the candidate commit, and the tree, so that it cannot be reused for another version. | §8 | M3 | MUST | T-03 |
+| R-ART-10 | Treat a Coordinator decision as a proposal, and execute it only after validating state, target Phase, permissions, budget, and capabilities. | §8 | M2 | MUST | — |
+
+### Verification
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-VER-01 | Verify independently of the agent's report, and never grant acceptance when a mandatory check failed, did not run, or is stale (invariant 5). | §9 | M1 | MUST | — |
+| R-VER-02 | Run only named checks that are resolved from trusted definitions; never execute a shell string that an LLM generated. | §9 | M1 | MUST | — |
+| R-VER-03 | Record in the evidence the command identifier, exit code, timeout, log references, and target identifiers. | §9 | M1 | MUST | — |
+| R-VER-04 | Run the required checks on the base commit at Run start, and block the Run before any agent launch when this baseline fails. | §9 | M1 | MUST | T-06 |
+| R-VER-05 | Record the files that the checks create in the baseline run, and treat them as ignored for the rest of the Run. | §9 | M2 | MUST | T-10 |
+| R-VER-06 | Give the Implementer the commands of its Phase's checks; do not use its own runs as evidence, and do not treat a refused self-check as a failure. | §9 | M2 | MUST | T-10 |
+| R-VER-07 | Treat a change to, or the deletion of, an existing protected file as a scope violation unless a step of the Phase names the file with that action. | §9 | M3 | MUST | T-09 |
+| R-VER-08 | When review is mandatory, require an accepted verdict from an independent Evaluator before acceptance (invariant 6). | §6 | M3 | MUST | — |
+| R-VER-09 | Set the evaluation frequency with `independentReview` (`none`, `final`, `phase`), and keep mechanical and final verification under `none`. | §10 | M3 | MUST | — |
+
+### Strategies and scheduling
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-SCH-01 | Implement Standard and Phased as presets of the one workflow, and enforce the single Phase of Standard for the first Plan Revision only. | §10 | M2 | MUST | T-09 |
+| R-SCH-02 | Implement Strict as Phased with `phase` as a review minimum that configuration cannot lower. | §10 | M3 | MUST | — |
+| R-SCH-03 | Bound the concurrently running agent processes of every role by `maxConcurrency`, and launch at least two agents concurrently when it allows. | §10 | M1 | MUST | T-18 |
+| R-SCH-04 | With `maxConcurrency` of one, keep at most one Phase in flight. | §10 | M4 | MUST | T-18 |
+| R-SCH-05 | Derive the Ready set from the accepted plan, break ties by plan order and Phase ID, and dispatch a Phase as soon as its dependencies are accepted. | §10 | M4 | MUST | T-18 |
+| R-SCH-06 | Reserve a slot when the launch intent is persisted and release it after the process is reaped; a worker that holds a slot never waits for another. | §10 | M1 | MUST | T-18 |
+| R-SCH-07 | Have workers return results through channels only, and let a single control loop validate results and commit events. | §10 | M0 | MUST | T-20 |
+| R-SCH-08 | Keep the successes of independent Phases when one Phase fails, do not start its dependents, and do not repeat preserved work while its assumptions hold. | §10 | M4 | MUST | T-20 |
+| R-SCH-09 | Stop new dispatches on Run-wide events: replanning, an uncertain outcome, budget exhaustion, a rate-limit rejection, or a question to the user. | §10 | M4 | MUST | T-20 |
+| R-SCH-10 | Accept a new revision only after active Attempts have finished or been cancelled and reconciled, and reject late results from older revisions. | §10 | M3 | MUST | T-20 |
+| R-SCH-11 | Fall back to serial execution when parallel safety cannot be established. | §10 | M4 | MUST | T-19 |
+| R-SCH-12 | Optimize session reuse, dynamic concurrency, and advanced resource locks from measurements, while preserving the mandatory gates. | §18 | M6 | MUST | — |
+| R-SCH-13 | Add the Direct strategy and strategy selection by the Coordinator. | §10 | M7 | MUST | — |
+
+### Resource coordination
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-RES-01 | Check declared resource IDs against trusted configuration, acquire all needed locks together in a fixed order, and dispatch only when they are held. | §10.1 | M4 | MUST | T-19 |
+| R-RES-02 | Hold shared-resource locks until the agent and its verification processes have stopped. | §10.1 | M4 | MUST | T-19 |
+| R-RES-03 | Hold change-scope locks from a Phase's first dispatch until it is `Accepted`, `Failed`, or `Superseded`. | §10.1 | M4 | MUST | T-19 |
+| R-RES-04 | Derive lock ownership from Phase state so that replay reconstructs it. | §10.1 | M4 | MUST | — |
+
+### Workspace integration
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-INT-01 | Freeze the base commit at Run start, use a dedicated integration ref and workspace, and never apply changes to the user's branch or working tree automatically. | §10.2 | M1 | MUST | T-06, T-19 |
+| R-INT-02 | Create a dedicated worktree for each Phase from the current accepted integration commit, and never let two Implementers write to one worktree. | §10.2 | M1 | MUST | T-19 |
+| R-INT-03 | Determine the change set, check it against the change scope before staging, and snapshot it as a candidate commit before any check runs. | §10.2 | M1 | MUST | T-06 |
+| R-INT-04 | Create internal commits only on Bellona-managed refs, without running repository hooks and without requiring signing. | §10.2 | M1 | MUST | — |
+| R-INT-05 | Reset the Phase worktree to the candidate commit before a repair Attempt continues in it. | §10.2 | M3 | MUST | — |
+| R-INT-06 | Integrate a candidate by fast-forward when the integration ref still points at its base commit. | §10.2 | M1 | MUST | T-18 |
+| R-INT-07 | Integrate one candidate at a time, and use a merge commit when the ref has moved; never resolve conflicts automatically. | §10.2 | M4 | MUST | T-19 |
+| R-INT-08 | Run the mandatory checks on the integration candidate, reuse candidate evidence only for an identical tree, and do not advance the ref when verification fails. | §10.2 | M4 | MUST | T-19 |
+| R-INT-09 | Record the integration intent, update the ref by comparison with the expected old commit, persist the observed result, and commit `PhaseAccepted` only afterwards. | §10.2 | M1 | MUST | T-20 |
+| R-INT-10 | Move the integration ref only forward within a Run (invariant 15). | §10.2 | M1 | MUST | T-19 |
+| R-INT-11 | After a conflict or a post-integration failure, start the repair Attempt in a new worktree at the current integration commit, with the preserved candidate as a reference. | §10.2 | M4 | MUST | — |
+| R-INT-12 | When a Run is `Completed`, report the final integration commit and the Bellona-managed ref that points at it. | §10.2 | M1 | MUST | — |
+
+### Agent runtime
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-RUN-01 | Keep host-specific argument names and event formats out of the core. | §11 | M1 | MUST | — |
+| R-RUN-02 | Take the agent's final message as its output; agents write no artifact files, and only the engine writes stored artifacts. | §11 | M1 | MUST | — |
+| R-RUN-03 | Derive the outcome of an execution from the host's result, never from the exit code alone (invariant 3). | §11 | M1 | MUST | — |
+| R-RUN-04 | Treat every capability beyond the basic result as optional, and fail configuration validation at Run start when a role setting requires an absent capability. | §11 | M1 | MUST | — |
+| R-RUN-05 | Store the launch receipt with the Attempt, and fail the Attempt when the receipt contradicts a value that the adapter set. | §11 | M1 | MUST | T-08 |
+| R-RUN-06 | Record refused calls, and use them to classify a failure only when the Attempt produced no acceptable output. | §11 | M1 | MUST | T-08 |
+| R-RUN-07 | Build the environment of the agent process explicitly, and record variable names but never values. | §11 | M1 | MUST | T-08 |
+| R-RUN-08 | Keep the role definition identical across the Attempts of a role, and put variable content in the user message. | §11 | M2 | SHOULD | — |
+| R-RUN-09 | Reject `args` that contain an adapter-owned argument, and pass the prompt separately from `args`. | §14 | M1 | MUST | T-08 |
+| R-RUN-10 | Assign the session ID before launch where the host supports it, and record it with the launch intent. | §12.1 | M1 | MUST | T-08 |
+| R-RUN-11 | Resume only by explicit session ID, and pass the instructions of a resumed Turn in the user message. | §11.1 | M2 | MUST | — |
+| R-RUN-12 | Bind a session to one role and one worktree, never run two Attempts in one session at once, and never let an Evaluator reuse an Implementer session. | §5 | M1 | MUST | T-18 |
+| R-RUN-13 | Start every Evaluator Attempt in a new session. | §11.1 | M3 | MUST | — |
+| R-RUN-14 | Resume the Planner session for later Planner Attempts, after updating its worktree to the current integration commit and taking the comparison baseline. | §5 | M2 | MUST | T-10 |
+| R-RUN-15 | Disallow native subagent delegation for the Implementer and the Coordinator as a role contract, and record subagent use where the host reports it. | §11.1 | M1 | MUST | T-10 |
+| R-RUN-16 | If read-only subagents are enabled for the Planner or the Evaluator, treat them as part of the Attempt, and reject the setting for the Implementer and the Coordinator. | §11.1 | Post-MVP | MUST | T-10 |
+| R-RUN-17 | Launch each role as an independent CLI process, with a new process for every Turn in the MVP. | §11.1 | M1 | MUST | — |
+| R-RUN-18 | Probe the capabilities of each target host and answer its open questions before the AgentRuntime contract is frozen. | §18 | M0 | MUST | — |
+| R-RUN-19 | Run the same workflow with a second host adapter, and report host-specific limitations. | §18 | M5 | MUST | — |
+| R-RUN-20 | Record cache usage for every Attempt. | §11 | M1 | MUST | — |
+
+### Process supervision
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-PROC-01 | Launch agents in dedicated process groups, reap them with `Wait`, and consume stdout and stderr concurrently. | §11.2 | M1 | MUST | T-15 |
+| R-PROC-02 | Enforce the startup, Turn, Phase, and Run timeouts and the cancellation grace period. | §11.2 | M1 | MUST | T-05, T-15 |
+| R-PROC-03 | Measure active time as wall-clock time with at least one supervised process running, without adding parallel processes together. | §11.2 | M1 | MUST | — |
+| R-PROC-04 | Cancel in stages: a graceful interrupt, termination of the process group, and forced termination after the grace period; apply the same stages when a Turn times out. | §11.2 | M1 | MUST | T-08, T-15 |
+| R-PROC-05 | End a cancelled or timed-out Attempt as `Cancelled` or `TimedOut`, and do not accept output produced during the graceful interrupt. | §11.2 | M1 | MUST | T-08 |
+| R-PROC-06 | Never identify a surviving process by PID alone, and do not terminate a process whose identity is uncertain. | §11.2 | M3 | MUST | — |
+| R-PROC-07 | Detect idle agents from gaps in events, without treating silence during inference as a failure. | §11.2 | Post-MVP | MUST | T-15 |
+
+### Persistence
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-PER-01 | Keep per-Run files under the XDG state directory, and introduce no external database. | §12 | M0 | MUST | — |
+| R-PER-02 | Treat the append-only `events.jsonl` as the authority for Run state, and `state.json` as a snapshot that can be rebuilt from it. | §12 | M0 | MUST | T-04, T-13 |
+| R-PER-03 | Prevent concurrent modification with a per-Run OS file lock, and use a single writer inside the engine. | §12 | M0 | MUST | — |
+| R-PER-04 | Finalize an artifact by temporary file, sync, and atomic rename before appending the event that references it, and update the snapshot after the event is synchronized. | §12 | M0 | MUST | T-04, T-12 |
+| R-PER-05 | On resume, validate sequence numbers, formats, and artifact references; recover an incomplete trailing record, and never ignore corruption in the middle of the journal. | §12 | M0 | MUST | T-04, T-13 |
+| R-PER-06 | Keep replay free of side effects: the Reducer derives state only from committed event values (invariant 13). | §12.1 | M0 | MUST | T-13 |
+| R-PER-07 | Put only small data and artifact references (path, size, SHA-256) in events; keep finalized artifacts immutable, and stop when one is lost or does not match. | §12.2 | M0 | MUST | T-13 |
+| R-PER-08 | Configure size limits for artifacts, events, output records, questions, and answers, and never truncate required input silently. | §12.2 | M1 | MUST | T-16 |
+| R-PER-09 | Give each Attempt its own directory with its binding and per-Turn outputs; agents never write into the Run directory. | §12 | M1 | MUST | — |
+
+### Recovery and reconciliation
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-REC-01 | Persist the launch intent before launch, record the confirmed launch afterwards, and record observed completion as a separate event. | §12 | M1 | MUST | T-12 |
+| R-REC-02 | On recovery, acquire the Run lock, replay events, and then reconcile external state as the reconciliation table prescribes. | §12.1 | M3 | MUST | T-12 |
+| R-REC-03 | Mark an Attempt whose outcome cannot be determined `Unknown`, enter `RecoveryRequired`, and neither rerun nor discard it automatically. | §12.1 | M3 | MUST | T-12 |
+| R-REC-04 | Do not rerun an accepted Phase while its evidence is valid; when the evidence is stale or corrupt, rerun the checks on the recorded commit. | §12.1 | M3 | MUST | — |
+| R-REC-05 | Create a new Attempt for every retry, and never overwrite an earlier Attempt. | §12.1 | M1 | MUST | — |
+
+### Context
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-CTX-01 | Store the workflow context in Bellona and leave the conversation context to the host; implement no conversation store or compaction. | §12.3 | M1 | MUST | — |
+| R-CTX-02 | Give each role the context that the role table requires, as a fixed input contract. | §12.3 | M1 | MUST | — |
+| R-CTX-03 | Do not share the Implementer's conversation with the Evaluator. | §12.3 | M3 | MUST | T-16 |
+| R-CTX-04 | When a session is lost or the host cannot resume, continue in a new session from persisted artifacts and workspace state. | §12.3 | M2 | MUST | T-16 |
+
+### Run manifest
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-MAN-01 | Freeze the effective configuration, the role definitions, and the workflow version at Run start by copying their contents (invariant 12). | §12.4 | M0 | MUST | T-14 |
+| R-MAN-02 | Refuse to resume when the engine or the event contracts are incompatible, unless an explicit migration applies. | §12.4 | M0 | MUST | T-14 |
+| R-MAN-03 | Record Runtime updates and changes in model availability, and apply no configuration change to an existing Run except a journaled policy amendment. | §12.4 | M1 | MUST | T-14 |
+| R-MAN-04 | Keep the intended host customization scope and the launch receipt with the Run. | §12.4 | M1 | MUST | T-08 |
+
+### Workspace
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-WS-01 | Record the repository state at Run start, reject a dirty working tree by default, and never overwrite uncommitted changes. | §13 | M1 | MUST | T-06 |
+| R-WS-02 | Create worktrees under `workspace.root`, never inside the user's working tree, and run every role in a Bellona-managed worktree. | §13 | M1 | MUST | T-06 |
+| R-WS-03 | Run the `workspace.setup` commands in every new worktree before use, and classify a setup failure as `MissingEnvironment`. | §13 | M1 | MUST | T-06 |
+| R-WS-04 | Compare the tracked files of the worktree before and after each execution of a read-only role, and do not accept the output when they changed. | §4 | M2 | MUST | T-06 |
+| R-WS-05 | Do not save credentials or API keys in artifacts or logs. | §13 | M1 | MUST | — |
+| R-WS-06 | Validate the paths, symbolic links, and sizes of artifacts that the engine loads. | §13 | M0 | MUST | T-06 |
+| R-WS-07 | Do not delete worktrees unconditionally at the end of a Run; check for unpreserved changes first. | §13 | M1 | MUST | T-06 |
+| R-WS-08 | Never edit harness configuration files or add sandbox arguments, and add no permission arguments unless scope enforcement is enabled. | §13 | M1 | MUST | — |
+| R-WS-09 | Use Git worktrees as the only workspace separation. | §13 | M1 | MUST | — |
+
+### Configuration
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-CFG-01 | Keep models, limits, and restrictions in user-managed JSON configuration, and never let an LLM or a lower-priority setting weaken restrictions or budget ceilings. | §14 | M0 | MUST | — |
+| R-CFG-02 | Define commands as named argument arrays, and resolve plan references, required checks, and workspace setup by name. | §14 | M1 | MUST | — |
+| R-CFG-03 | Apply the host customization scope of each role: `inherit` by default, or `isolated`. | §14 | M1 | MUST | — |
+| R-CFG-04 | If scope enforcement is enabled, generate the role's permission rules from the Phase, own the permission arguments, record a fallback to detection, and keep the inspection after the Turn as the authority. | §14 | Post-MVP | MUST | T-10 |
+
+### Errors and retries
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-ERR-01 | Classify errors as the error table prescribes, and keep separate persisted counters for transport retries, structured-output repairs, implementation repairs, and replanning. | §14.1 | M3 | MUST | T-15 |
+| R-ERR-02 | Retry a transient error only when the outcome of external side effects is certain, with capped backoff and jitter, and without stacking retries on those of the host. | §14.1 | M3 | MUST | — |
+| R-ERR-03 | Treat a rate-limit rejection as a Run-wide event, and stop new dispatches. | §14.1 | M4 | MUST | — |
+| R-ERR-04 | Record the reason, the count, and the next eligible retry time of every retry, so that a restart cannot reset the limits. | §14.1 | M3 | MUST | T-15 |
+| R-ERR-05 | End an Attempt that reaches a per-Turn cap as `Failed`, without stopping the Run. | §14.1 | M1 | MUST | T-08 |
+| R-ERR-06 | Preserve the worktree state on a scope violation, and do not snapshot or integrate it. | §14.1 | M1 | MUST | T-06 |
+
+### Budgets
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-BUD-01 | Manage Attempt counts, replan counts, and the Turn, Phase, and Run time limits. | §14.2 | M1 | MUST | T-01, T-15 |
+| R-BUD-02 | Cap the agent steps and the estimated cost of each Turn where the host supports it, and record the caps as not applied where it does not. | §14.2 | M1 | MUST | T-08 |
+| R-BUD-03 | Persist usage and cost only when the host reports them, never record an unavailable value as zero, and aggregate cumulative cost per session. | §14.2 | M1 | MUST | T-08 |
+
+### CLI and observability
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-CLI-01 | Provide `run`, `status`, `logs`, `inspect`, `resume`, and `cancel` as a foreground CLI with text output. | §15 | M1 | MUST | — |
+| R-CLI-02 | Provide `questions`, `answer`, and `approve`; show numbered choices with Other, and preserve questions on EOF. | §15 | M2 | MUST | T-07 |
+| R-CLI-03 | Record a policy amendment with `resume --amend` before resuming a `Blocked` Run. | §15 | M3 | MUST | T-02 |
+| R-CLI-04 | Keep the core engine independent of CLI input and output and of persistent execution modes, and require no daemon. | §15.1 | M0 | MUST | — |
+| R-CLI-05 | Distinguish domain events, agent events, process logs, decision records, and evidence, and correlate them by Run, Attempt, and session ID. | §15.1 | M1 | MUST | — |
+| R-CLI-06 | Keep confidential data out of logs where it would only be duplicated. | §15.1 | M1 | SHOULD | — |
+| R-CLI-07 | Add `events` and `usage` commands when they are needed. | §15.1 | Post-MVP | MAY | — |
+
+### Technology and evaluation
+
+| ID | Requirement | Section | Milestone | Strength | Tests |
+| --- | --- | --- | --- | --- | --- |
+| R-TECH-01 | Implement the core in Go with the standard library, and add no third-party Go module in the MVP unless a requirement cannot be met maintainably or correctly without one. | §17 | M0 | MUST | — |
+| R-TECH-02 | Test with the standard `testing` package, a fake runtime, and temporary Git repositories. | §17 | M0 | MUST | — |
+| R-TECH-03 | Begin the evaluation infrastructure in the first milestone. | §18 | M0 | MUST | — |
+| R-TECH-04 | Compare the variants of section 19 under the same task set, models, checks, and budgets, and do not use model self-evaluation alone as a success metric. | §19 | M4 | MUST | — |
