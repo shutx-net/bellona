@@ -1,0 +1,47 @@
+# Why this workflow does not use Nix: go.mod pins Go 1.27.3 and the module has
+# no dependencies (R-TECH-01), so actions/setup-go with go-version-file: go.mod
+# installs the same Go version as flake.nix without installing Nix or relying
+# on a third-party Nix action, and the job stays fast. Local development keeps
+# using the flake (see AGENTS.md).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          # The module has no dependencies, so there is no go.sum to key the
+          # cache on.
+          cache-dependency-path: go.mod
+
+      - name: gofmt
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "These files are not formatted; run gofmt -w:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race ./...
+
+      - name: Requirements index
+        run: python3 docs/tools/gen_index.py SPEC.md --check-only

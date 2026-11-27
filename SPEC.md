@@ -222,6 +222,8 @@ Plan approval offers three responses: approve, request changes, and reject. Requ
 
 A final verification or final evaluation failure has no single owning Phase. The engine returns to `Planning`, and the Planner adds repair Phases as a new Plan Revision based on the current integration commit (§10.2). Repair replanning consumes the replan counter. The Direct strategy may omit the Planner but must not bypass mandatory gates.
 
+The engine reads the tables as follows. "Any nonterminal state" includes the suspended states, so a suspended Run can still be blocked, marked `RecoveryRequired`, or cancelled. A row whose source is "any" state never produces a transition from a state to itself; the only self-transitions are the rows that name one, which start a new Evaluator Attempt. Suspensions nest: entering a suspended state records the state that was left, and resuming returns to it, even when that state is itself suspended. Each row is committed by exactly one event, and the event that persists an Implementer's launch intent also moves its Phase from `Ready` to `Running`.
+
 ### Phase states
 
 ```mermaid
@@ -273,6 +275,8 @@ stateDiagram-v2
 | Any state except `Accepted` and `Superseded` | A new Plan Revision removes or redefines the Phase | `Superseded` |
 
 `Recovering` is the state in which the engine classifies the failure (§14.1) and, where reasoning is needed, launches the Coordinator. A Phase that has reached its retry limit stays in `Recovering` and waits: a policy amendment (§6.3) lets it receive a new Attempt, and replanning supersedes it. `Failed` ends a Phase within its Plan Revision; only replanning can replace it. Neither condition blocks the Run by itself, and neither changes the state of independent Phases, which continue (§10). The Run becomes `Blocked` only when no Phase can make progress and replanning is not authorized.
+
+Reconciliation (§12.1) moves a Phase out of `RecoveryRequired` to `Ready`, `Running`, `Verifying`, `Evaluating`, `IntegrationPending`, `Integrating`, `Accepted`, or `Recovering`. It never moves a Phase to `Failed` directly: `Failed` is reached only from `Recovering`.
 
 ### Attempt states
 
@@ -372,7 +376,8 @@ Record question cancellation and invalidation as events. Bind approval to the ha
 The user continues a `Blocked` Run with `resume` after resolving the cause, for example by fixing the environment or authentication. If the cause is an exhausted limit, the user may raise that limit with an explicit policy amendment. A policy amendment:
 
 - is requested only by the user through the CLI, never by an LLM or by lower-priority configuration;
-- may change only execution limits (retry and replan limits, time limits, and per-Turn step and cost caps), not role definitions, contracts, or the workflow;
+- may change only execution limits (retry and replan limits, time limits, and per-Turn step and cost caps), not role definitions, contracts, or the workflow. Each change names the limit by its configuration key (`maxPhaseRetries`, `maxReplans`, `timeout`, `maxAgentSteps`, or `maxTurnCostUsd`) and gives the value in canonical text, with `unlimited` for a cap that is not set;
+- is accepted only while the Run is `Blocked`;
 - is appended to the journal as a `PolicyAmended` event that records the previous value, the new value, and the time. The frozen `manifest.json` and `policy.json` are not rewritten; the effective policy is derived from them plus the amendments in the journal.
 
 After an amendment that raises the Phase retry limit, a Phase waiting in `Recovering` receives a new Attempt. After one that raises the replan limit, replanning can be authorized again. Without an amendment, resuming a Run whose limit is still exhausted returns it to `Blocked`.
@@ -402,7 +407,7 @@ Record the requested value, the value passed to the adapter, and the value confi
 
 Define artifact contracts using versioned, typed Go structs and explicit validation functions. JSON Schema may be used to publish contracts and request structured output from compatible harnesses, but the MVP does not require a general-purpose JSON Schema validator. The examples below are illustrative; formal types and constraints will be finalized during implementation.
 
-Use `encoding/json` to read JSON and reject unknown fields, trailing JSON values, missing required fields, nulls where invalid, invalid values, and duplicate keys. Implement semantic constraints, such as dependencies and revisions, through Go validation functions. If JSON Schema descriptors are provided, test their consistency with the types and contracts.
+Use the standard library's `encoding/json/v2` to read JSON and reject unknown fields, trailing JSON values, missing required fields, nulls, invalid values, and duplicate keys. No Bellona contract uses JSON `null`: an optional or unavailable value is an absent member. Implement semantic constraints, such as dependencies and revisions, through Go validation functions. If JSON Schema descriptors are provided, test their consistency with the types and contracts.
 
 ### Attempt binding
 
@@ -789,13 +794,13 @@ Use `context.Context` and `os/signal`. On Linux, use dedicated process groups an
 
 ### 11.3 Claude Code adapter notes (informative)
 
-These notes record what was observed and read when this specification was revised (Claude Code 2.1.332, 2026-11-27). They are inputs for the M0 capability probe, not requirements. Verify each of them again at integration time.
+These notes record what was observed and read when this specification was revised (Claude Code 2.1.332, 2026-11-27 and 2026-11-28). They are inputs for the M0 capability probe, not requirements. Verify each of them again at integration time.
 
 As the project's current working assumption, the Claude Code adapter uses a subscription login. API-key authentication is not considered for now, so `--bare` is not used, and `--safe-mode` is the candidate for `hostCustomization: isolated` (see the open questions).
 
 The Agent SDK overview recommends this form of integration for other languages: "To drive the same agent loop from a language other than Python or TypeScript, run the CLI as a subprocess with the `-p` flag and `--output-format json`."
 
-Evidence levels: **observed** means seen in non-interactive runs on one machine, with a small model, in a scratch repository, and in most runs with customizations disabled. That repository was inside the scratch area of a Claude session, which the host treats specially (see Instruction files), so observations that depend on trust or on loaded files may differ in a Bellona worktree. **help** means stated by the CLI's help text. **docs** means quoted from code.claude.com.
+Evidence levels: **observed** means seen in non-interactive runs on one machine, with a small model, with a clean environment, and in most runs with customizations disabled. Most runs used a scratch repository inside the scratch area of a Claude session, which the host treats specially (see Instruction files). The runs of 2026-11-28 on instruction files and `--safe-mode` used a repository and a linked worktree under the XDG state directory, where Bellona creates its worktrees. **help** means stated by the CLI's help text. **tools** means read from the tool descriptions that the same CLI version gives the model. **docs** means quoted from code.claude.com.
 
 | Topic | Finding | Evidence |
 | --- | --- | --- |
@@ -806,38 +811,36 @@ Evidence levels: **observed** means seen in non-interactive runs on one machine,
 | System prompt on resume | The system prompt is recorded on the first request and reused on resume, even when a later launch passes different text. This recording is off by default under `--bare`. | help |
 | Result | The JSON result carries `subtype`, `is_error`, `terminal_reason`, `permission_denials`, `structured_output`, `total_cost_usd`, `usage`, `modelUsage`, and `num_turns`. A run that ended in an API error reported `subtype: success` together with `is_error: true` and `terminal_reason: api_error`, and exited with code 1, so `is_error` and `terminal_reason` have to be read as well as `subtype`. | observed |
 | Refused calls | With no permission handler, a call that needs approval is refused and the run continues. The process exits with code 0 and `subtype: success`, and `permission_denials` lists the refused calls. | observed |
-| Structured output | `--json-schema` returns the object in `structured_output`, also when built-in tools are restricted with `--tools`. The host retries invalid output itself and ends with `error_max_structured_output_retries`. A schema with `anyOf` or `oneOf` at the top level was rejected by the API with error 400. A single object with a `status` field that distinguishes the cases worked. | observed; docs (Agent SDK) |
+| Structured output | `--json-schema` returns the object in `structured_output`, also when built-in tools are restricted with `--tools`. The host retries invalid output itself and ends with `error_max_structured_output_retries`. A schema with `anyOf` or `oneOf` at the top level was rejected by the API with error 400. A single object with a `status` field that distinguishes the cases worked, and so did `anyOf` or `oneOf` nested in a property of that object. | observed; docs (Agent SDK) |
 | Cost | `total_cost_usd` and `modelUsage` accumulate across resumes of one session. | observed |
 | Cost cap | `--max-budget-usd` stops a run on the host's own cost estimate, and spend can pass the cap. | docs |
 | Caps reached | `--max-turns` ended a run with `subtype: error_max_turns` and `terminal_reason: max_turns`, and `--max-budget-usd` with `error_max_budget_usd` and `budget_exhausted`. Both set `is_error: true` and exit code 1. | observed |
 | Tool restriction | `--tools "Read,Grep,Glob"` removes the other built-in tools. `--disallowedTools "Edit,Write"` does not prevent writes: with `acceptEdits`, a shell redirection created a file. `--permission-mode dontAsk` refuses calls that would prompt and still runs calls matched by `--allowedTools`. Under `dontAsk`, read-only shell commands (`git status`, `git diff`, `git log`, `ls`, `cat`, `pwd`) ran without an allow rule. | observed |
 | Scope rules | With `--permission-mode dontAsk`, `--allowedTools "Edit(src/**)"` allowed a write under `src/` and refused one elsewhere, and the rule also governed the Write tool. A `--disallowedTools "Edit(src/protected/**)"` rule overrode the allow rule. User settings were not loaded in these runs. A `permissions.allow` entry in the worktree's tracked `.claude/settings.json` did not widen these rules: the host ignored it with a warning, because the workspace was not trusted. | observed |
-| Subagents | The delegation tool is listed as `Task`. The parent's rules applied to a general-purpose subagent: a command matched by `--allowedTools` ran, another was refused, and the refusal appeared in the parent's `permission_denials`. An Explore subagent had only read tools. `--disallowedTools Task` removed the tool, and no subagent was started. Repeated `--disallowedTools` options were merged, and `--disallowedTools Task` removed the tool even when a `--tools` list named it. Removing `Task` made `WebFetch` appear in the tool list as a direct tool. The list also contains `Workflow`, `RemoteTrigger`, `CronCreate`, `ScheduleWakeup`, and `SendMessage`, whose names suggest that they start or contact other agents. They were removed in the same way, but what each of them does was not verified. `subagent_stats.spawned` matched the number of subagents in four runs. Subagent spend counts toward `--max-budget-usd`. | observed; docs |
+| Subagents | The delegation tool is listed as `Task`. The parent's rules applied to a general-purpose subagent: a command matched by `--allowedTools` ran, another was refused, and the refusal appeared in the parent's `permission_denials`. An Explore subagent had only read tools. `--disallowedTools Task` removed the tool, and no subagent was started. Repeated `--disallowedTools` options were merged, and `--disallowedTools Task` removed the tool even when a `--tools` list named it. Removing `Task` made `WebFetch` appear in the tool list as a direct tool. Other tools reach other agents: `Workflow` orchestrates subagents, `RemoteTrigger` creates and runs scheduled tasks in the cloud, and `SendMessage` delivers messages to agents that are already running, including other Claude sessions on the same machine, which `ListAgents` lists. `CronCreate` and `ScheduleWakeup` schedule later prompts for the same session and start no other agent. Removing any of `Workflow`, `RemoteTrigger`, `CronCreate`, `ScheduleWakeup`, or `SendMessage` removed only that tool. `subagent_stats.spawned` matched the number of subagents in four runs. Subagent spend counts toward `--max-budget-usd`. | observed; tools; docs |
 | Prompt cache | A role definition of about 13,000 tokens, passed with `--append-system-prompt`, was written to the cache in one fresh worktree and read from it in another: cache creation fell from about 18,700 to about 5,300 tokens. A second, different definition gave the same pair of values and was not served from the cache of the first. The runs were a few seconds apart. `--exclude-dynamic-system-prompt-sections` made no difference in an earlier probe. | observed |
 | Restricted mode | `--restricted` removes the tools that run commands and ignores user, project, and local settings files. | help |
 | Permission prompts | `--permission-prompts host` routes prompts to an SDK host or to `--permission-prompt-tool`; `none` denies them. | help |
-| Launch receipt | With `--output-format stream-json --verbose`, the first event (`system` / `init`) reports `model`, `cwd`, `session_id`, `permissionMode`, `tools`, `plugins`, `mcp_servers`, `sandbox_enabled`, `claude_code_version`, and `apiKeySource`. It did not report the effort level, also when `--effort` was passed. A debug log did not contain it either. An unknown `--effort` value produced a warning on standard error and the default effort, with exit code 0. | observed |
+| Launch receipt | With `--output-format stream-json --verbose`, the first event (`system` / `init`) reports `model`, `cwd`, `session_id`, `permissionMode`, `tools`, `plugins`, `mcp_servers`, `sandbox_enabled`, `claude_code_version`, and `apiKeySource`. It did not report the effort level, also when `--effort` was passed. A debug log did not contain it either. An unknown `--effort` value produced a warning on standard error and the default effort, with exit code 0. `--effort max` with a small model produced no warning or error. | observed |
 | Silent settings failure | In `-p` mode, settings files that fail validation are ignored without an error. An inline `--settings` value that is not valid JSON was read as a file path and stopped the run with "Settings file not found". | help; observed |
-| Customization | Without `--bare`, a `-p` run executes the hooks in the project's settings and connects the servers in its `.mcp.json` without a trust prompt. `--bare` skips hooks, plugin sync, auto memory, and instruction-file discovery, and for Anthropic authentication it reads only an API key. The docs say `--bare` "will become the default for `-p` in a future release". `--safe-mode` disables customizations and keeps normal authentication. Observed: `--safe-mode` left no MCP server connected, kept the permission rules given on the command line, and did not run a PreToolUse hook passed with `--settings`; without `--safe-mode` the same hook blocked the call. `--setting-sources project` alone left the user's MCP servers connected. With a subscription login, a `--bare` run ended with "Not logged in". | docs; help; observed |
-| Auto memory | Auto memory is "Per repository, shared across worktrees". In a default `-p` run an agent that was asked to save a note wrote a memory file, which was stored under the project directory of the main repository, and a run in another worktree of that repository recalled it without tools. Whether an agent saves notes unasked was not observed. With `--safe-mode` the note was not recalled, and a new one could not be saved. | docs; observed |
+| Customization | Without `--bare`, a `-p` run executes the hooks in the project's settings and connects the servers in its `.mcp.json` without a trust prompt. `--bare` skips hooks, plugin sync, auto memory, and instruction-file discovery, and for Anthropic authentication it reads only an API key. The docs say `--bare` "will become the default for `-p` in a future release". `--safe-mode` disables customizations and keeps normal authentication. Observed: `--safe-mode` left no MCP server connected, kept the permission rules given on the command line, and did not run a PreToolUse hook passed with `--settings`; without `--safe-mode` the same hook blocked the call. `--setting-sources project` alone left the user's MCP servers connected. With a subscription login, a `--bare` run ended with "Not logged in". In a linked worktree, `--safe-mode` stopped the loading of `CLAUDE.md`, auto memory, and the skills of the user and of installed plugins; the skills built into the host were still offered. The launch receipt still listed most installed plugins under `--safe-mode`, so its plugin list does not show which plugins are active. The help states that the hooks of managed plugins still apply. Without `--safe-mode`, the `SessionStart` hooks of installed plugins ran in a `-p` run. | docs; help; observed |
+| Auto memory | Auto memory is "Per repository, shared across worktrees". In a default `-p` run an agent that was asked to save a note wrote a memory file, which was stored under the project directory of the main repository, and a run in another worktree of that repository recalled it without tools. Whether an agent saves notes unasked was not observed. With `--safe-mode` the note was not recalled, and a new one could not be saved. The launch receipt of a session in a linked worktree gave the main repository's project directory as its auto memory path (`memory_paths.auto`). | docs; observed |
 | Signals | SIGINT in the middle of a Turn: exit code 0 within about 3 seconds, a result with `subtype: error_during_execution` and `terminal_reason: aborted_tools`, and the tool process ended. SIGTERM in the middle of a Turn: exit code 143 within about 3 seconds, no result, and the tool process ended. Tool commands ran in a different process group from the `claude` process, which ended them itself in both cases. | observed; docs |
 | Background wait | After the final answer the process can wait for background work. Unless a background command started by the main conversation is still running, it stops after 10 minutes of continuous idle waiting by default (`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`). Observed: after the model started a command in the background and answered, the process emitted its result and was still alive when it was signalled a few seconds later. The 10-minute limit itself was not observed. | docs; observed |
 | Session data | Each working directory gets its own session data under `~/.claude/projects/`, and `claude purge <path>` deletes it. | observed; help |
 | Process identity | The session ID given with `--session-id` appears in the command line of the `claude` process, and its working directory is the worktree. Started in its own session, the process is the leader of its process group. | observed |
-| Instruction files | The probe directory was inside the scratch area of a Claude session, and there the host did not load the worktree's `CLAUDE.md` in any mode. Whether instruction files load in a Bellona worktree was therefore not measured; the location of the worktree can decide it. | observed |
+| Instruction files | In a repository and in a linked worktree under the XDG state directory, a default `-p` run loaded the `CLAUDE.md` of its working tree, although the directory had never been trusted. With `--safe-mode` it did not. Inside the scratch area of a Claude session, the host did not load `CLAUDE.md` in any mode. | observed |
+| API errors | With the API unreachable (connection refused), the host retried 10 times with exponential backoff, from about 0.6 seconds to a cap of about 30 to 40 seconds, about 175 seconds in all. Each retry appeared as a `system` / `api_retry` event with `attempt`, `max_retries`, `retry_delay_ms`, and `error_status`. The run then ended with exit code 1, `is_error: true`, and `terminal_reason: api_error`. Rate-limit and server errors were not provoked. | observed |
 
-Open questions for the M0 probe. None of these is verified:
+The M0 probe answered the questions about which tools reach other agents, nested unions with `--json-schema`, whether the host retries a failed connection itself, and whether instruction files load in a Bellona worktree (see the table). The remaining questions are not verified. Each names the milestone that needs the answer:
 
-- Is an unsupported effort level lowered without an error? The effort that was applied could not be observed in the result, in the event stream, or in a debug log.
-- How do rate limits surface when several processes run in parallel? A `rate_limit_event` with `status: allowed` and a reset time appeared in the event stream of every run. It was only observed and was not found in the docs. A rejection was not provoked, because that would use up the quota.
-- Do user-level permission rules widen the scope rules that the adapter generates? Only a tracked project file was tested.
-- Does the host retry API errors itself, and how many times?
-- Which tools can start or contact other agents, and what else changes when they are removed?
-- Do nested unions work with `--json-schema`? Only `anyOf` and `oneOf` at the top level were tested.
-- What does the built-in sandbox do in a linked worktree? Its prerequisites were not installed.
-- Does `--safe-mode` fully implement `hostCustomization: isolated`? It stopped memory, MCP servers, and a hook passed with `--settings`, but plugins and skills were still listed in the launch receipt, and instruction files were not measured.
-- Are instruction files loaded in a Bellona worktree?
-- Do these observations hold for the models that the roles use? They were made with a small model.
+- M1a: Do these observations hold for the models that the roles use? They were made with a small model.
+- M1a: Does `--safe-mode` fully implement `hostCustomization: isolated`? It stopped instruction files, auto memory, the skills of the user and of installed plugins, MCP servers, and a hook passed with `--settings`. Whether the hooks of installed plugins that are not managed still run was not measured.
+- M1a: Does the rule of §11.1 cover `SendMessage`? It starts no agent, but it hands work to agents that are already running.
+- M2: Is an unsupported effort level lowered? Neither an unknown value nor `--effort max` with a small model failed, and the host does not report the level it applied, so the adapter can record only the requested level.
+- M3: How do rate-limit and server errors surface, and does the host retry them? A `rate_limit_event` with `status: allowed` and a reset time appeared in the event stream of every run. It was only observed and was not found in the docs. A rejection was not provoked, because that would use up the quota.
+- After M4, with scope enforcement: Do user-level permission rules widen the scope rules that the adapter generates? Only a tracked project file was tested. Testing user rules means changing the user's own settings.
+- Not needed for the MVP: What does the built-in sandbox do in a linked worktree? Bellona never adds sandbox arguments, and the sandbox's prerequisites were not installed.
 
 The Agent SDK overview (https://code.claude.com/docs/en/agent-sdk/overview) states: "Unless previously approved, Anthropic does not allow third party developers to offer claude.ai login or rate limits for their products, including agents built on the Claude Agent SDK." Whether this bears on Bellona, which runs the user's own CLI, has not been determined (§21).
 
@@ -883,14 +886,15 @@ Agents never write into the Run directory. The adapter captures agent output fro
 The append-only `events.jsonl` is the authoritative source for Run state; `state.json` is a snapshot reconstructible from events. A full general-purpose event-sourcing framework is unnecessary; record only events needed for the Run lifecycle.
 
 ```jsonl
-{"schemaVersion":1,"seq":1,"type":"RunCreated","runId":"run-01","payload":{}}
-{"schemaVersion":1,"seq":2,"type":"PlanAccepted","runId":"run-01","payload":{"revision":1}}
-{"schemaVersion":1,"seq":3,"type":"AttemptScheduled","runId":"run-01","payload":{"phaseId":"phase-01","attemptId":"attempt-01","effort":"high"}}
-{"schemaVersion":1,"seq":4,"type":"AttemptStarted","runId":"run-01","payload":{"attemptId":"attempt-01"}}
-{"schemaVersion":1,"seq":5,"type":"PhaseAccepted","runId":"run-01","payload":{"phaseId":"phase-01","attemptId":"attempt-01"}}
+{"schemaVersion":1,"seq":1,"type":"RunCreated","runId":"run-01","payload":{"task":{"path":"task.json","size":312,"sha256":"<digest>"}}}
+{"schemaVersion":1,"seq":2,"type":"ManifestFrozen","runId":"run-01","payload":{"manifest":{"path":"manifest.json","size":1490,"sha256":"<digest>"}}}
+{"schemaVersion":1,"seq":9,"type":"PlanAccepted","runId":"run-01","payload":{"revision":1}}
+{"schemaVersion":1,"seq":10,"type":"AttemptScheduled","runId":"run-01","payload":{"attemptId":"attempt-01","role":"implementer","revision":1,"phaseId":"phase-01"}}
+{"schemaVersion":1,"seq":11,"type":"AttemptStarted","runId":"run-01","payload":{"attemptId":"attempt-01"}}
+{"schemaVersion":1,"seq":17,"type":"PhaseAccepted","runId":"run-01","payload":{"revision":1,"phaseId":"phase-01","attemptId":"attempt-01"}}
 ```
 
-Actual events include timestamps, target revisions, evidence references, and other fields required by each event type. The preceding example is simplified.
+Actual events include timestamps, target revisions, evidence references, and other fields required by each event type. The preceding example is simplified: it leaves out the events between those shown, the `time` member, and some payload members. Every event has the envelope members `schemaVersion`, `seq` (1 for the first event of a Run, then increasing by one), `type`, `runId`, `time` (UTC), and `payload`. The event types and their payloads are defined in the engine's domain package, together with the event that commits each row of the transition tables of §6; a test compares those rows with the tables in this specification.
 
 Manage input waiting through events as well. Persist and synchronize finalized question and answer files before appending events that reference them. The following example shows events during input waiting, omitting sequence numbers and similar fields.
 
@@ -910,7 +914,7 @@ During replay, reconstruct only the presence of answers and the waiting state. R
 - Finalize artifacts by writing a temporary file, synchronizing it, and atomically renaming it into place. Then append and synchronize events containing artifact references and hashes.
 - Apply persisted events to the Reducer and update the snapshot. Store the last applied sequence number in the snapshot.
 - Use rename within the same filesystem for atomic file replacement; fsync the file before the rename and the parent directory after it.
-- On resume, validate event sequence numbers, formats, and artifact references. Recover incomplete trailing records under lock; never silently ignore corruption in the middle of the journal.
+- On resume, validate event sequence numbers, formats, and artifact references. Recover incomplete trailing records under lock; never silently ignore corruption in the middle of the journal. An incomplete trailing record is either the bytes after the last newline, or a trailing region of NUL bytes and newlines that begins with a record made only of NUL bytes, as a crash can leave on some filesystems. A trailing region longer than one event of the maximum size plus its newline is corruption, not an incomplete record. The engine copies an incomplete trailing record into `logs/` before it truncates the journal. A newline-terminated record that does not decode, or that exceeds the size limit, is corruption.
 - Limit event replay to pure state reconstruction. Do not replay side effects such as LLM calls or command execution.
 
 ### Crash recovery
@@ -945,11 +949,13 @@ Domain Events contain small data needed for state transitions and artifact refer
 {
   "schemaVersion": 1,
   "seq": 42,
-  "type": "PlanGenerated",
+  "type": "PlanAccepted",
   "runId": "run-01",
+  "time": "2026-11-28T09:00:00Z",
   "payload": {
     "revision": 1,
-    "artifact": {"path": "plans/rev-0001/plan.json", "sha256": "<digest>", "size": 4218}
+    "plan": {"path": "plans/rev-0001/plan.json", "size": 4218, "sha256": "<digest>"},
+    "phases": [{"id": "phase-01", "dependsOn": []}]
   }
 }
 ```
@@ -986,16 +992,21 @@ Bellona's frozen definitions do not cover what a host loads on its own: user and
 ```json
 {
   "runId": "run-01",
-  "engineVersion": "0.1.0",
-  "workflowVersion": 1,
   "schemaVersion": 1,
+  "engineVersion": "0.1.0",
+  "workflowId": "<workflow id>",
+  "workflowVersion": 1,
   "workflowDigest": "sha256:<digest>",
+  "eventSchemaVersion": 1,
+  "configSchemaVersion": 1,
+  "policy": {"path": "policy.json", "size": 1830, "sha256": "<digest>"},
+  "roleDefinitions": [{"role": "planner", "definition": {"path": "definitions/roles/planner.md", "size": 2104, "sha256": "<digest>"}}],
   "roleDefinitionsDigest": "sha256:<digest>",
   "runtimes": {"claude-code": {"version": "<observed version>"}}
 }
 ```
 
-Plan Revision represents plan changes within a Run and is distinct from Schema Version and Workflow Version. If the engine or event contracts are incompatible on resume, migrate only through an explicit migration procedure; otherwise refuse resumption. Record Runtime updates and changes in model availability, and do not silently apply configuration changes. The only configuration change applied to an existing Run is a user policy amendment recorded in the journal (§6.3). Complete reproduction of external model responses and environments is not guaranteed.
+Plan Revision represents plan changes within a Run and is distinct from Schema Version and Workflow Version. If the engine or event contracts are incompatible on resume, migrate only through an explicit migration procedure; otherwise refuse resumption. A Run is compatible when the manifest schema version, the workflow ID, version, and digest, the event schema version, and the configuration schema version recorded in its manifest all equal those of the engine. The engine version is recorded but not compared. There is no migration procedure yet, so every incompatible Run is refused. `runtimes` joins the manifest with the first adapter (M1a). Record Runtime updates and changes in model availability, and do not silently apply configuration changes. The only configuration change applied to an existing Run is a user policy amendment recorded in the journal (§6.3). Complete reproduction of external model responses and environments is not guaranteed.
 
 ## 13. Workspace and trust model
 
@@ -1114,7 +1125,7 @@ Host enforcement reduces wasted Attempts; it is not a boundary. A permitted comm
 
 `agents.<role>.subagents` states whether the Planner or the Evaluator may delegate read-only investigation to host subagents (§11.1). `agents.<role>.env` names additional environment variables to pass to the agent process (§11). `execution.maxAgentSteps` and `execution.maxTurnCostUsd` cap one Turn where the host supports it (§14.2). `verification.protectedPaths` protects existing tests and check configuration (§9). `execution.requirePlanApproval`, `true` by default, decides whether a valid plan waits for the user's approval (§6); skipping approval according to risk is deferred until a risk criterion exists. In non-interactive mode, a Run that waits for approval persists its state and exits as a Run that waits for input does (§6.1), and `approve` continues it.
 
-Configuration precedence is explicit CLI settings, user settings, trusted project settings, and built-in defaults, in that order. Lower-priority settings and LLM proposals must not weaken operation restrictions or budget ceilings. After Run start, execution limits change only through a user policy amendment (§6.3).
+Configuration precedence is explicit CLI settings, user settings, trusted project settings, and built-in defaults, in that order. Lower-priority settings and LLM proposals must not weaken operation restrictions or budget ceilings. An explicit CLI setting is the user's decision for the Run and applies as given. For a field that sets a restriction or a budget ceiling, the user settings and the trusted project settings cannot loosen each other: the stricter of the values they set applies. Stricter means the lower count, cap, concurrency, or timeout; `true` for required plan approval and for a clean repository; the stronger `independentReview`; the union of `requiredChecks` and of `protectedPaths`; and `none` for `subagents`. A built-in default applies only to a field that no layer sets. Every other field follows the precedence order. A strategy's minimum, such as the review of Strict (§10), applies after the merge. After Run start, execution limits change only through a user policy amendment (§6.3).
 
 ### 14.1 Error classification and retry policy
 
@@ -1141,7 +1152,7 @@ Avoid redundant retry loops between the harness and Bellona. Do not classify an 
 
 ### 14.2 Execution budgets
 
-The MVP manages Attempt counts, replan counts, and Turn/Phase/Run time limits. Where the host supports it, also cap the agent steps and the estimated cost of each Turn (`execution.maxAgentSteps`, `execution.maxTurnCostUsd`). The host enforces these caps on its own estimate and can pass them, so they bound a runaway Turn but are not a guaranteed monetary limit. Where the host has no such cap, record the caps as not applied, as for effort (§7); the Turn timeout remains the bound. Do not equate reasoning effort with a token or cost ceiling. Persist actual token usage, cache usage, and API-equivalent cost only when available. Represent unavailable values as `unknown` or null, never as zero in aggregates. Distinguish subscription charges from API-equivalent costs. A host may report cost cumulatively for a session; aggregate cost per session from the latest reported value instead of adding up the values of its Turns. The adapter states which form its host uses. This matters in particular for the Planner, whose Attempts share one session (§5). Do not guarantee a strict monetary limit for hosts whose exact usage cannot be controlled in advance. Advanced budget allocation and cross-Run aggregation are P1 or later.
+The MVP manages Attempt counts, replan counts, and Turn/Phase/Run time limits. Where the host supports it, also cap the agent steps and the estimated cost of each Turn (`execution.maxAgentSteps`, `execution.maxTurnCostUsd`). The host enforces these caps on its own estimate and can pass them, so they bound a runaway Turn but are not a guaranteed monetary limit. Where the host has no such cap, record the caps as not applied, as for effort (§7); the Turn timeout remains the bound. Do not equate reasoning effort with a token or cost ceiling. Persist actual token usage, cache usage, and API-equivalent cost only when available. Represent unavailable values as `unknown` or as an absent member, never as zero in aggregates. Distinguish subscription charges from API-equivalent costs. A host may report cost cumulatively for a session; aggregate cost per session from the latest reported value instead of adding up the values of its Turns. The adapter states which form its host uses. This matters in particular for the Planner, whose Attempts share one session (§5). Do not guarantee a strict monetary limit for hosts whose exact usage cannot be controlled in advance. Advanced budget allocation and cross-Run aggregation are P1 or later.
 
 ## 15. CLI concept
 
@@ -1193,43 +1204,44 @@ Bellona is daemon-optional. The MVP foreground CLI starts when a Run begins and 
 
 ```text
 bellona/
-├── cmd/bellona/
+├── cmd/bellona/              # CLI entry point (M0: the version command only)
 ├── internal/
-│   ├── engine/          # FSM, transition guards, execution loop
-│   ├── domain/          # Run, Phase, Attempt, Session, Event
-│   ├── scheduler/       # DAG, ready queue, bounded dispatch, resource coordination
-│   ├── policy/          # Model, effort, budget and capability checks
-│   ├── recovery/        # Reconciliation and retry decisions
-│   ├── context/         # Role-specific input assembly (as needed)
-│   ├── agent/           # Runtime contracts and normalized events
+│   ├── strictjson/           # Strict JSON decoding for every contract
+│   ├── domain/               # IDs, states, roles, events, payloads, limits
+│   ├── fsm/                  # Run, Phase, and Attempt transition tables as data
+│   ├── projection/           # Pure reducer, snapshot shape, replay
+│   ├── storage/              # Run directory, lock, artifacts, journal, snapshot
+│   ├── config/               # bellona.json decoding and layer merge
+│   ├── manifest/             # Run manifest and compatibility
+│   ├── artifact/             # Typed artifact contracts
+│   ├── agent/                # AgentRuntime contract (provisional until M1a)
 │   ├── runtime/
-│   │   ├── claudecode/
-│   │   └── codex/
-│   ├── interaction/     # Questions, Other, answers, input validation
-│   ├── artifact/        # Schema and artifact lifecycle
-│   ├── verification/    # Checks, evidence, acceptance gates
-│   ├── workspace/       # Git workspaces and integration
-│   ├── storage/         # File journal, snapshots, locking
-│   └── config/
-├── roles/
-│   ├── coordinator.md
-│   ├── planner.md
-│   ├── implementer.md
-│   └── evaluator.md
-├── schemas/
-│   ├── plan.schema.json
-│   ├── result.schema.json
-│   ├── review.schema.json
-│   ├── decision.schema.json
-│   ├── question.schema.json
-│   └── answer.schema.json
-├── evals/
-├── docs/
+│   │   ├── fake/             # Deterministic runtime for tests
+│   │   ├── claudecode/       # (M1a)
+│   │   └── codex/            # (M5)
+│   ├── engine/               # Single-writer control loop, Run creation and resume
+│   ├── evals/                # Evaluation task and result formats
+│   ├── version/
+│   ├── archtest/             # Dependency direction, purity, and other architecture tests
+│   ├── testutil/gitrepo/     # Temporary Git repositories for tests
+│   ├── scheduler/            # (later) DAG, ready queue, bounded dispatch, resource coordination
+│   ├── policy/               # (later) Model, effort, budget and capability checks
+│   ├── recovery/             # (later) Reconciliation and retry decisions
+│   ├── context/              # (later) Role-specific input assembly
+│   ├── interaction/          # (later) Questions, Other, answers, input validation
+│   ├── verification/         # (later) Checks, evidence, acceptance gates
+│   └── workspace/            # (later) Git worktrees and integration
+├── roles/                    # Embedded role definitions (M0: placeholders)
+├── schemas/                  # (later) JSON Schema descriptors, if any
+├── evals/                    # Evaluation tasks
+├── docs/tools/               # Generator of the requirements index
 ├── AGENTS.md
 ├── flake.nix
 ├── go.mod
 └── README.md
 ```
+
+The tree shows the packages that M0 created and, marked with a milestone or "later", the ones that later milestones are expected to add. `internal/archtest` fixes the direction of the dependencies between packages, and AGENTS.md describes it.
 
 Role definitions, plan schemas, and verification tests in the existing `implementing-in-phases` skill in `shutx-net/skills` can serve as migration inputs. However, move enforcement of state transitions and verification from the former parent agent into Go. Use the existing Python validation scripts as reference implementations and preferably port core validation to Go.
 
@@ -1241,7 +1253,7 @@ Role definitions, plan schemas, and verification tests in the existing `implemen
 | Workflow | Explicit state machine (custom FSM) |
 | Scheduling | Bounded parallel DAG execution; concurrency limit of one for sequential execution |
 | Persistence | JSON / append-only JSONL; no external DB |
-| Configuration | JSON (`encoding/json`) |
+| Configuration | JSON (`encoding/json/v2`) |
 | Contracts | Go structs + explicit validation; optional JSON Schema descriptors |
 | Agent execution | `os/exec`, `context.Context` |
 | Concurrency | goroutines, channels, single writer |
@@ -1256,7 +1268,7 @@ Role definitions, plan schemas, and verification tests in the existing `implemen
 Maximize use of the Go standard library and target zero third-party Go module dependencies in the MVP. Do not adopt Cobra, external FSM libraries, YAML parsers, general-purpose JSON Schema validators, ORMs, or logging frameworks. Implement state transitions, DAG validation, and typed JSON validation as small, purpose-built Go code. Do not implement a general-purpose YAML parser or JSON Schema processor either.
 
 - CLI: `flag` and per-subcommand handling.
-- Files, events, and locking: `os`, `io`, `bufio`, `encoding/json`, `sync`, and Linux OS file locking.
+- Files, events, and locking: `os`, `io`, `bufio`, `encoding/json/v2`, `sync`, and Linux OS file locking.
 - Hashes and IDs: `crypto/sha256`, `crypto/rand`, `encoding/hex`.
 - Signals and processes: `os/exec`, `os/signal`, `context`, and necessary Linux-specific handling.
 - Embedded role definitions: `embed` if needed.
@@ -1267,7 +1279,7 @@ Consider third-party libraries individually only when actual requirements arise 
 
 | Milestone | Deliverables | Acceptance conditions |
 | --- | --- | --- |
-| M0 — Core contracts | Domain types, FSM (Run, Phase, and Attempt transition tables), fake runtime, file journal, host capability probe | Reject invalid state transitions and reconstruct the same internal state from events. Record how each target host handles non-interactive permissions, session resumption, structured output, and effort, and answer the open questions listed for the host (§11.3), before the AgentRuntime contract is frozen. |
+| M0 — Core contracts | Domain types, FSM (Run, Phase, and Attempt transition tables), fake runtime, file journal, host capability probe | Reject invalid state transitions and reconstruct the same internal state from events. For Claude Code, the first host, record how the host handles non-interactive permissions, session resumption, structured output, and effort, and answer the open questions of §11.3 that the contract depends on before the AgentRuntime contract is frozen. A question that only a later milestone needs is answered in that milestone, and a further host is probed when its adapter is added (M5). |
 | M1a — Agent runtime | Claude Code adapter, process and log management, normalized result, launch receipt, timeouts and cancellation | Launch one agent through the adapter in a temporary test repository, capture and validate its result, record the launch intent before launch, and enforce the Turn timeout and staged cancellation. |
 | M1b — Workspace pipeline | Isolated worktrees with setup and baseline checks, scope inspection and candidate snapshot, mechanical verification, fast-forward integration, concurrency slots, fixed workflow | Execute a hand-written plan through final verification in a test repository and supervise at least two independent agents concurrently. Do not declare completion on failure. |
 | M2 — Adaptive planning | Coordinator, Planner, per-phase effort, plan types and validation, HITL | Reject unsupported effort values and record actual launch requests for each Phase. Verify choice selection, Other, non-interactive answer persistence, and resumption. |
@@ -1277,7 +1289,7 @@ Consider third-party libraries individually only when actual requirements arise 
 | M6 — Advanced scheduling | Session reuse optimization, dynamic concurrency, advanced resource locks | Improve execution efficiency based on measurements while preserving mandatory gates. |
 | M7 — Adaptation & extensibility | Direct strategy, strategy selection by the Coordinator, declarative definitions and MCP if needed | Switch configurations while preserving mandatory constraints. |
 
-Appendix A assigns each requirement to one of these milestones. The first practical MVP covers M0–M4. It is not complete until M4 delivers parallel DAG execution and integration. Run manifests, persisted Attempt launch intent, persistence ordering, error classification and retry limits, process termination, and reconciliation are mandatory MVP requirements. Complete the manifest freeze, events/reducer, and locking in M0; process management in M1a, where Runtime information and the launch receipt join the Run record; fixed input contracts in M1b; questions, answers, and revision checks in M2; and post-crash reconciliation and error-specific recovery in M3. The first adapter is Claude Code; design the adapter interface to be vendor-independent. Begin evaluation infrastructure, worktree lifecycle management, and logical state-gate testing in the first milestone.
+Appendix A assigns each requirement to one of these milestones. The first practical MVP covers M0–M4. It is not complete until M4 delivers parallel DAG execution and integration. Run manifests, persisted Attempt launch intent, persistence ordering, error classification and retry limits, process termination, and reconciliation are mandatory MVP requirements. Complete the manifest freeze, events/reducer, and locking in M0; process management in M1a, where Runtime information and the launch receipt join the Run record; fixed input contracts in M1b; questions, answers, and revision checks in M2; and post-crash reconciliation and error-specific recovery in M3. The first adapter is Claude Code; design the adapter interface to be vendor-independent. Begin evaluation infrastructure and logical state-gate testing in the first milestone. Worktree lifecycle management begins with the workspace pipeline in M1b.
 
 M1 is divided in two. M1a covers launching and supervising one agent and recording its result; it needs no Bellona-managed worktree, plan, or verification. M1b depends on M1a and adds worktrees, verification, integration, and concurrency. In M1b the plan is hand-written and enters as the Planner's output through the fake runtime, so the Run passes through `Planning` and `PlanValidation`, and no transition is added. M1b runs without plan approval, which arrives with the approval commands in M2.
 
@@ -1352,13 +1364,14 @@ These specifications inform the design; they do not imply that Bellona has equiv
 
 The following decisions should be finalized when implementation begins. The host capability items affect the AgentRuntime contract and the configuration schema, so settle them with the M0 capability probe before those are frozen. The other items do not require a change to the initial architecture.
 
-- Formal typed JSON fields and validation contracts, and the scope of any JSON Schema descriptors.
+- Formal typed fields of the artifacts that later milestones introduce, such as plans, reviews, decisions, and questions, and the scope of any JSON Schema descriptors. M0 fixed the contracts of events, the snapshot, the manifest, and the configuration.
 - Exact CLI operations for preserving and deleting worktrees.
 - The capabilities of Codex. It has not been probed as Claude Code was (§11.3).
-- Manifest compatibility rules and migration procedures.
+- Migration procedures. The compatibility rule is fixed (§12.4), and no migration exists yet.
 - Whether `--safe-mode` fully implements `hostCustomization: isolated` for Claude Code (§11.3).
-- Formal error codes, retry and timeout defaults, and artifact size limits.
-- Default MVP concurrency, formal configuration contracts for shared-resource IDs, and naming and retention of internal integration refs. The basic integration procedure follows §10.2.
+- Formal error codes, and confirmation of the provisional defaults and limits set in M0: strategy `phased`, `maxConcurrency` 2, `maxPhaseRetries` 3, `maxReplans` 2, `timeout` 2 hours, plan approval required, `independentReview: final`, a clean repository required, and no per-Turn step or cost cap; at most 64 KiB per event, 1 KiB per text value in an event, 16 MiB per artifact, and 64 MiB for the snapshot.
+- Where the user and project configuration files live, and how a project becomes trusted (§14). The M0 engine receives configuration layers that are already decoded; the CLI needs the answer in M1b.
+- Formal configuration contracts for shared-resource IDs, and naming and retention of internal integration refs. The basic integration procedure follows §10.2.
 - Authentication and licensing terms of each host when Bellona is distributed (§11.3). As the project's current working assumption, Bellona uses a subscription login and does not consider API-key authentication.
 - Whether to wait for a short reset time after a rate-limit rejection instead of suspending the Run, once the host is known to report the reset time reliably.
 - Whether failure-driven replanning should resume the Planner session or start a new one. A resumed session keeps its investigation but may hold on to a defective plan.
@@ -1499,7 +1512,7 @@ This appendix is generated by `docs/tools/gen_index.py`. To change it, edit the 
 
 | ID | Requirement | Section | Milestone | Strength | Tests |
 | --- | --- | --- | --- | --- | --- |
-| R-ART-01 | Validate artifacts with typed structures, and reject unknown fields, trailing values, missing required fields, invalid nulls and values, and duplicate keys. | §8 | M0 | MUST | T-03 |
+| R-ART-01 | Validate artifacts with typed structures, and reject unknown fields, trailing values, missing required fields, nulls, invalid values, and duplicate keys. | §8 | M0 | MUST | T-03 |
 | R-ART-02 | Keep engine-assigned identifiers out of agent output; write an Attempt binding with the launch intent, and accept an output only when its binding matches the current Plan Revision and Attempt (invariant 4). | §8 | M1b | MUST | T-03 |
 | R-ART-03 | Validate plans for unique IDs, existing references, acyclic dependencies, acceptance criteria, permitted effort values, verification references, and repository-relative scopes. | §8 | M2 | MUST | T-01 |
 | R-ART-04 | Require every acceptance criterion to name its verification means in `verifiedBy`, and reject a criterion that has none or names an unavailable one. | §8 | M2 | MUST | T-09 |
@@ -1589,7 +1602,7 @@ This appendix is generated by `docs/tools/gen_index.py`. To change it, edit the 
 | R-RUN-15 | Remove the host's tools that start other agents from every role that may not delegate, where the host allows it, check the launch receipt for them, and record subagent use where the host reports it. | §11.1 | M1a | MUST | T-10 |
 | R-RUN-16 | If read-only subagents are enabled for the Planner or the Evaluator, treat them as part of the Attempt, and reject the setting for the Implementer and the Coordinator. | §11.1 | Post-MVP | MUST | T-10 |
 | R-RUN-17 | Launch each role as an independent CLI process, with a new process for every Turn in the MVP. | §11.1 | M1a | MUST | — |
-| R-RUN-18 | Probe the capabilities of each target host and answer its open questions before the AgentRuntime contract is frozen. | §18 | M0 | MUST | — |
+| R-RUN-18 | Probe the capabilities of Claude Code and answer the open questions that the contract depends on before the AgentRuntime contract is frozen; probe a further host when its adapter is added. | §18 | M0 | MUST | — |
 | R-RUN-19 | Run the same workflow with a second host adapter, and report host-specific limitations. | §18 | M5 | MUST | — |
 | R-RUN-20 | Record cache usage for every Attempt. | §11 | M1a | MUST | — |
 

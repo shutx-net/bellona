@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "calc-divide",
+  "title": "Add a checked integer division to a small calculator package",
+  "repository": {
+    "kind": "directory",
+    "path": "testdata/repo"
+  },
+  "request": "Add a function `Divide(a, b int) (int, error)` to package calc. It returns the integer quotient of a and b, truncated toward zero as Go's / operator does (for example, Divide(7, 2) is 3 and Divide(-7, 2) is -3). When b is 0 it returns the exported sentinel error `ErrDivideByZero`, declared as a package-level error value, so that errors.Is(err, ErrDivideByZero) holds. Add unit tests for the new behaviour.",
+  "acceptance": {
+    "files": "testdata/acceptance",
+    "checks": [
+      {
+        "id": "acceptance-tests",
+        "argv": ["go", "test", "./..."],
+        "timeout": "2m"
+      }
+    ],
+    "regressionChecks": [
+      {
+        "id": "existing-tests",
+        "argv": ["go", "test", "./..."]
+      }
+    ]
+  },
+  "expectedChangeScope": ["*.go"],
+  "tags": ["go", "small"]
+}
